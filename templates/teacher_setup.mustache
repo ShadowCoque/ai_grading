@@ -1,0 +1,33 @@
+{{!
+    @template local_ai_grading/teacher_setup
+
+    Moodle adaptation of the teacher configuration mockup from
+    "Interfaz 1 Profesor (primyoto)".
+}}
+<div id="local-ai-grading-app" class="local-ai-grading" data-courseid="{{courseid}}">
+    <div class="ag-scroll-shell">
+        <header class="ag-page-header">
+            <h2>{{#str}}pagetitle, local_ai_grading{{/str}}</h2>
+            <p>{{#str}}pagesubtitle, local_ai_grading{{/str}}</p>
+        </header>
+
+        <div class="ag-page-grid">
+            <div class="ag-left-column">
+                <section class="ag-card" data-region="activity-card"></section>
+                <section class="ag-card" id="rubric-section" data-region="rubric-card"></section>
+                <section class="ag-card ag-card--manual" id="manual-eval-section" data-region="manual-card"></section>
+                <section class="ag-card" data-region="ai-test-card"></section>
+            </div>
+
+            <aside class="ag-right-column">
+                <section class="ag-card ag-card--prompt" id="prompt-section" data-region="prompt-card"></section>
+            </aside>
+        </div>
+
+        <section class="ag-main-action" data-region="main-action"></section>
+        <section class="ag-student-selection" id="student-selection" data-region="student-selection" hidden></section>
+    </div>
+
+    <div class="ag-toast" data-region="toast" hidden></div>
+    <script type="application/json" data-region="labels">{{{labelsjson}}}</script>
+</div>

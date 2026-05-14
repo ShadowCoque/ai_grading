@@ -1,0 +1,1402 @@
+define(['core/ajax'], function(Ajax) {
+    const rootSelector = 'local-ai-grading-app';
+
+    let root = null;
+    let state = null;
+    let idCounter = 0;
+
+    const rubricDefaults = [
+        {
+            id: 'tmp-correctness',
+            name: 'Correctitud',
+            weight: 40,
+            description: 'El código produce los resultados esperados',
+            levels: [
+                {id: 'tmp-correctness-1', name: 'Excelente', percentage: 100, description: 'Pasa todos los casos de prueba'},
+                {id: 'tmp-correctness-2', name: 'Aceptable', percentage: 50, description: 'Pasa algunos casos de prueba'},
+                {id: 'tmp-correctness-3', name: 'Insuficiente', percentage: 0, description: 'No pasa casos de prueba'}
+            ]
+        },
+        {
+            id: 'tmp-efficiency',
+            name: 'Eficiencia',
+            weight: 30,
+            description: 'Uso adecuado de recursos y estructuras',
+            levels: [
+                {id: 'tmp-efficiency-1', name: 'Excelente', percentage: 100, description: 'Solución eficiente y clara'},
+                {id: 'tmp-efficiency-2', name: 'Aceptable', percentage: 50, description: 'Solución funcional con oportunidades de mejora'},
+                {id: 'tmp-efficiency-3', name: 'Insuficiente', percentage: 0, description: 'Solución ineficiente o incompleta'}
+            ]
+        },
+        {
+            id: 'tmp-style',
+            name: 'Estilo',
+            weight: 20,
+            description: 'Claridad, legibilidad y organización del código',
+            levels: [
+                {id: 'tmp-style-1', name: 'Excelente', percentage: 100, description: 'Código legible, organizado y mantenible'},
+                {id: 'tmp-style-2', name: 'Aceptable', percentage: 50, description: 'Código entendible con detalles por mejorar'},
+                {id: 'tmp-style-3', name: 'Insuficiente', percentage: 0, description: 'Código difícil de leer o mantener'}
+            ]
+        },
+        {
+            id: 'tmp-docs',
+            name: 'Documentación',
+            weight: 10,
+            description: 'Comentarios y explicaciones apropiadas',
+            levels: [
+                {id: 'tmp-docs-1', name: 'Excelente', percentage: 100, description: 'Documentación clara y suficiente'},
+                {id: 'tmp-docs-2', name: 'Aceptable', percentage: 50, description: 'Documentación básica'},
+                {id: 'tmp-docs-3', name: 'Insuficiente', percentage: 0, description: 'Sin documentación relevante'}
+            ]
+        }
+    ];
+
+    const init = () => {
+        root = document.getElementById(rootSelector);
+        if (!root || root.dataset.aiGradingReady === '1') {
+            return;
+        }
+
+        root.dataset.aiGradingReady = '1';
+        state = createState();
+        root.addEventListener('click', event => {
+            void handleClick(event);
+        });
+        root.addEventListener('input', handleInput);
+        root.addEventListener('change', event => {
+            void handleChange(event);
+        });
+        renderLoading();
+        void loadState(0);
+    };
+
+    const createState = () => ({
+        courseid: Number(root.dataset.courseid || 0),
+        settings: {mode: 'mock', externalConfigured: false, timeout: 30},
+        activities: [],
+        selectedActivity: null,
+        selectedVPL: '',
+        config: null,
+        rubricCriteria: clone(rubricDefaults),
+        editablePrompt: '',
+        promptDirty: false,
+        students: [],
+        manuals: [],
+        aiTests: [],
+        submissions: {},
+        loadingSubmissions: {},
+        loading: true,
+        savingConfig: false,
+        savingManual: false,
+        isGenerating: false,
+        showStudentSelection: false,
+        manualEvalType: null,
+        manualEvalStudent: '',
+        manualSubmission: '',
+        manualLevels: {},
+        manualFeedback: {},
+        manualObservations: '',
+        testCodeSource: null,
+        selectedTestStudent: '',
+        testSubmission: '',
+        randomStudentId: '',
+        latestAiResult: null,
+        selectedStudents: [],
+        searchTerm: '',
+        statusFilter: 'all'
+    });
+
+    const loadState = async(vplid) => {
+        state.loading = true;
+        renderAll();
+
+        try {
+            const data = await request('get_state', {vplid: Number(vplid || 0)});
+            applyState(data);
+            renderAll();
+        } catch (error) {
+            state.loading = false;
+            renderAll();
+            showToast(error.message || 'No se pudo cargar AI Grading.');
+        }
+    };
+
+    const applyState = data => {
+        state.loading = false;
+        state.settings = data.settings || state.settings;
+        state.activities = data.activities || [];
+        state.selectedActivity = data.selectedActivity || null;
+        state.selectedVPL = state.selectedActivity ? String(state.selectedActivity.id) : '';
+        state.config = data.config || null;
+        state.students = data.students || [];
+        state.manuals = data.manuals || [];
+        state.aiTests = data.aiTests || [];
+        state.latestAiResult = null;
+
+        if (data.criteria && data.criteria.length) {
+            state.rubricCriteria = normaliseCriteria(data.criteria);
+        } else {
+            state.rubricCriteria = clone(rubricDefaults);
+        }
+
+        state.promptDirty = Boolean(state.config && state.config.prompt);
+        state.editablePrompt = state.promptDirty ? state.config.prompt : generateFullPrompt();
+        resetSelections();
+    };
+
+    const resetSelections = () => {
+        state.manualEvalType = null;
+        state.manualEvalStudent = '';
+        state.manualSubmission = '';
+        state.manualLevels = {};
+        state.manualFeedback = {};
+        state.manualObservations = '';
+        state.testCodeSource = null;
+        state.selectedTestStudent = '';
+        state.testSubmission = '';
+        state.randomStudentId = '';
+        state.selectedStudents = [];
+        state.searchTerm = '';
+        state.statusFilter = 'all';
+    };
+
+    const renderLoading = () => {
+        region('activity-card').innerHTML = '<div class="ag-empty">Cargando datos de Moodle...</div>';
+        region('rubric-card').innerHTML = '';
+        region('manual-card').innerHTML = '';
+        region('ai-test-card').innerHTML = '';
+        region('prompt-card').innerHTML = '';
+        region('main-action').innerHTML = '';
+        renderStudentSelection();
+    };
+
+    const renderAll = () => {
+        if (state.loading) {
+            renderLoading();
+            return;
+        }
+        syncPromptIfNeeded();
+        renderActivityCard();
+        renderRubricCard();
+        renderManualCard();
+        renderAiTestCard();
+        renderPromptCard();
+        renderMainAction();
+        renderStudentSelection();
+    };
+
+    const renderActivityCard = () => {
+        region('activity-card').innerHTML = `
+            <h3 class="ag-card-title">Actividad VPL</h3>
+            <div class="ag-stack">
+                <div class="ag-field">
+                    <label for="ag-vpl-select">Selecciona la actividad</label>
+                    <select id="ag-vpl-select" class="ag-select" data-action="select-vpl">
+                        <option value="">Selecciona una actividad VPL</option>
+                        ${state.activities.map(activity => `
+                            <option value="${activity.id}" ${String(activity.id) === state.selectedVPL ? 'selected' : ''}>
+                                ${escapeHtml(activity.name)}
+                            </option>
+                        `).join('')}
+                    </select>
+                    ${!state.activities.length ? `
+                        <div class="ag-info-box ag-info-box--yellow">No se encontraron actividades VPL en este curso.</div>
+                    ` : ''}
+                    ${state.selectedActivity ? `
+                        <p class="ag-success-line">Actividad seleccionada. ${state.config ? 'Configuración cargada desde Moodle.' : 'Todavía no tiene configuración guardada.'}</p>
+                    ` : ''}
+                </div>
+                ${state.selectedActivity ? `
+                    <div class="ag-activity-preview">
+                        <strong>${escapeHtml(state.selectedActivity.name)}</strong>
+                        <p>${escapeHtml(state.selectedActivity.description || 'Sin descripción disponible.')}</p>
+                        <span>${state.students.length} estudiante(s) con entregas registradas</span>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    };
+
+    const renderRubricCard = () => {
+        const total = totalWeight();
+        region('rubric-card').innerHTML = `
+            <div class="ag-card-header">
+                <h3 class="ag-card-title">Criterios de Evaluación</h3>
+                <button type="button" class="ag-btn ag-btn--outline ag-btn--sm" data-action="add-criterion"
+                    ${state.selectedVPL ? '' : 'disabled'}>
+                    <span class="ag-icon">+</span>
+                    Añadir criterio
+                </button>
+            </div>
+
+            <div class="ag-criteria-stack">
+                ${state.rubricCriteria.map(renderCriterion).join('')}
+            </div>
+
+            <div class="ag-total ${total === 100 ? 'is-ok' : 'is-error'}">
+                Total: ${formatNumber(total)}% ${total !== 100 ? '(debe sumar 100%)' : ''}
+            </div>
+        `;
+    };
+
+    const renderCriterion = criterion => `
+        <article class="ag-criterion" data-criterion-id="${escapeAttr(criterion.id)}">
+            <div class="ag-criterion-header">
+                <input class="ag-input ag-input--strong" type="text" value="${escapeAttr(criterion.name)}"
+                    placeholder="Nombre del criterio" data-action="criterion-field" data-field="name"
+                    data-criterion-id="${escapeAttr(criterion.id)}" ${state.selectedVPL ? '' : 'disabled'}>
+                <div class="ag-weight-field">
+                    <input class="ag-input" type="number" min="0" max="100" step="0.01" value="${criterion.weight}"
+                        placeholder="Peso" data-action="criterion-field" data-field="weight"
+                        data-criterion-id="${escapeAttr(criterion.id)}" ${state.selectedVPL ? '' : 'disabled'}>
+                    <span>%</span>
+                </div>
+                <button type="button" class="ag-icon-btn ag-icon-btn--danger" data-action="remove-criterion"
+                    data-criterion-id="${escapeAttr(criterion.id)}"
+                    ${state.rubricCriteria.length <= 1 || !state.selectedVPL ? 'disabled' : ''} aria-label="Eliminar criterio">
+                    <span aria-hidden="true">x</span>
+                </button>
+            </div>
+
+            <textarea class="ag-textarea ag-textarea--sm" rows="2" placeholder="Descripción del criterio"
+                data-action="criterion-field" data-field="description"
+                data-criterion-id="${escapeAttr(criterion.id)}" ${state.selectedVPL ? '' : 'disabled'}>${escapeHtml(criterion.description)}</textarea>
+
+            <div class="ag-level-table">
+                <div class="ag-level-table-header">
+                    <span>Tabla de Niveles</span>
+                    <button type="button" class="ag-btn ag-btn--ghost ag-btn--xs" data-action="add-level"
+                        data-criterion-id="${escapeAttr(criterion.id)}" ${state.selectedVPL ? '' : 'disabled'}>
+                        <span class="ag-icon">+</span>
+                        Añadir nivel
+                    </button>
+                </div>
+                <div class="ag-level-list">
+                    ${criterion.levels.map(level => renderLevel(criterion, level)).join('')}
+                </div>
+            </div>
+        </article>
+    `;
+
+    const renderLevel = (criterion, level) => `
+        <div class="ag-level-row" data-level-id="${escapeAttr(level.id)}">
+            <input class="ag-input ag-level-percent" type="number" min="0" max="100" step="0.01" value="${level.percentage}"
+                placeholder="0" data-action="level-field" data-field="percentage"
+                data-criterion-id="${escapeAttr(criterion.id)}" data-level-id="${escapeAttr(level.id)}">
+            <span class="ag-percent-mark">%</span>
+            <input class="ag-input" type="text" value="${escapeAttr(level.name)}"
+                placeholder="Nombre del nivel" data-action="level-field" data-field="name"
+                data-criterion-id="${escapeAttr(criterion.id)}" data-level-id="${escapeAttr(level.id)}">
+            <input class="ag-input" type="text" value="${escapeAttr(level.description)}"
+                placeholder="Descripción del nivel" data-action="level-field" data-field="description"
+                data-criterion-id="${escapeAttr(criterion.id)}" data-level-id="${escapeAttr(level.id)}">
+            <button type="button" class="ag-icon-btn ag-icon-btn--danger" data-action="remove-level"
+                data-criterion-id="${escapeAttr(criterion.id)}" data-level-id="${escapeAttr(level.id)}"
+                ${criterion.levels.length <= 1 ? 'disabled' : ''} aria-label="Eliminar nivel">
+                <span aria-hidden="true">x</span>
+            </button>
+        </div>
+    `;
+
+    const renderManualCard = () => {
+        region('manual-card').innerHTML = `
+            <div class="ag-title-row">
+                <h3 class="ag-card-title">Evaluación Manual del Profesor</h3>
+                <span class="ag-badge ag-badge--amber">Opcional</span>
+            </div>
+            <p class="ag-muted">
+                Guarda una calificación de referencia seleccionando niveles. No se ingresan notas libres por criterio.
+            </p>
+
+            <div class="ag-choice-grid">
+                ${choiceButton('manual-specific', 'specific', state.manualEvalType, 'Estudiante específico', 'Elige un estudiante', 'manual-type')}
+                ${choiceButton('manual-random', 'random', state.manualEvalType, 'Estudiante aleatorio', 'Selección al azar', 'manual-type', true)}
+            </div>
+
+            ${state.manualEvalType === 'specific' ? studentSelect('manual-student-select', state.manualEvalStudent, 'Elige un estudiante', 'manual-student') : ''}
+            ${state.manualEvalType === 'random' && state.manualEvalStudent ? selectedStudentMessage(state.manualEvalStudent, 'green', 'Estudiante') : ''}
+            ${state.manualEvalStudent ? submissionSelect('manual-submission-select', state.manualEvalStudent, state.manualSubmission, 'manual-submission') : ''}
+            ${state.manualEvalType && state.manualEvalStudent && state.manualSubmission ? renderManualEvaluationWorkspace() : ''}
+            ${renderManualHistory()}
+        `;
+    };
+
+    const renderManualEvaluationWorkspace = () => `
+        <div class="ag-manual-workspace">
+            ${submissionPreview(state.manualSubmission)}
+            <p class="ag-section-label">Califica cada criterio seleccionando un nivel:</p>
+            ${state.rubricCriteria.map(criterion => `
+                <div class="ag-manual-criterion">
+                    <label>${escapeHtml(criterion.name)} (${formatNumber(criterion.weight)} puntos)</label>
+                    <select class="ag-select" data-action="manual-level" data-criterion-id="${escapeAttr(criterion.id)}">
+                        <option value="">Selecciona un nivel</option>
+                        ${criterion.levels.map(level => `
+                            <option value="${escapeAttr(level.id)}" ${String(state.manualLevels[criterion.id] || '') === String(level.id) ? 'selected' : ''}>
+                                ${escapeHtml(level.name)} - ${formatNumber(level.percentage)}%
+                            </option>
+                        `).join('')}
+                    </select>
+                    <textarea class="ag-textarea ag-textarea--sm" rows="2" placeholder="Observación para este criterio..."
+                        data-action="manual-feedback" data-criterion-id="${escapeAttr(criterion.id)}">${escapeHtml(state.manualFeedback[criterion.id] || '')}</textarea>
+                </div>
+            `).join('')}
+            <textarea class="ag-textarea ag-textarea--sm" rows="3" placeholder="Observaciones generales..."
+                data-action="manual-observations">${escapeHtml(state.manualObservations)}</textarea>
+            <div class="ag-manual-total">
+                <p>Calificación Total:</p>
+                <strong>${formatNumber(manualTotal())}/100</strong>
+            </div>
+            <button type="button" class="ag-btn ag-btn--primary ag-btn--full" data-action="save-manual"
+                ${isManualComplete() && !state.savingManual ? '' : 'disabled'}>
+                ${state.savingManual ? 'Guardando...' : 'Guardar evaluación manual'}
+            </button>
+        </div>
+    `;
+
+    const renderManualHistory = () => `
+        <div class="ag-history-block">
+            <div class="ag-history-heading">
+                <strong>Calificaciones manuales guardadas</strong>
+                <span>${state.manuals.length}</span>
+            </div>
+            ${state.manuals.length ? `
+                <div class="ag-history-list">
+                    ${state.manuals.map(item => `
+                        <div class="ag-history-item">
+                            <div>
+                                <strong>${escapeHtml(item.studentName)}</strong>
+                                <span>Entrega #${item.submissionid} · ${escapeHtml(item.timecreatedText)} · ${formatNumber(item.totalgrade)}/100</span>
+                            </div>
+                            <button type="button" class="ag-btn ag-btn--ghost ag-btn--xs" data-action="delete-manual"
+                                data-manual-id="${item.id}">Eliminar</button>
+                        </div>
+                    `).join('')}
+                </div>
+            ` : '<div class="ag-empty ag-empty--compact">Todavía no hay calificaciones manuales guardadas.</div>'}
+        </div>
+    `;
+
+    const renderAiTestCard = () => {
+        const modeLabel = state.settings.mode === 'external'
+            ? (state.settings.externalConfigured ? 'External configurado' : 'External sin URL/token: usará mock seguro')
+            : 'Mock';
+
+        region('ai-test-card').innerHTML = `
+            <div class="ag-card-header">
+                <h3 class="ag-card-title">Evaluación de prueba con IA</h3>
+                <span class="ag-badge">${escapeHtml(modeLabel)}</span>
+            </div>
+            <p class="ag-muted">Prueba una entrega real antes de continuar con fases posteriores.</p>
+
+            <div class="ag-choice-grid">
+                ${choiceButton('test-student', 'student', state.testCodeSource, 'Estudiante específico', 'Elige un estudiante del curso', 'test-source')}
+                ${choiceButton('test-random', 'random', state.testCodeSource, 'Estudiante aleatorio', 'Selecciona una entrega al azar', 'test-source', true)}
+            </div>
+
+            ${state.testCodeSource === 'student' ? studentSelect('student-select', state.selectedTestStudent, 'Elige un estudiante del curso', 'test-student') : ''}
+            ${state.testCodeSource === 'random' && state.randomStudentId ? selectedStudentMessage(state.randomStudentId, 'blue', 'Estudiante seleccionado') : ''}
+            ${selectedTestStudentId() ? submissionSelect('test-submission-select', selectedTestStudentId(), state.testSubmission, 'test-submission') : ''}
+            ${renderTestCodePreview()}
+            ${state.testCodeSource ? `
+                <button type="button" class="ag-btn ag-btn--primary ag-btn--full ag-btn--lg" data-action="generate-preview"
+                    ${canGeneratePreview() ? '' : 'disabled'}>
+                    <span class="ag-play-icon" aria-hidden="true"></span>
+                    ${state.isGenerating ? 'Evaluando...' : 'Probar evaluación con IA'}
+                </button>
+            ` : ''}
+            ${renderAiResults()}
+            ${renderAiHistory()}
+        `;
+    };
+
+    const renderPromptCard = () => {
+        region('prompt-card').innerHTML = `
+            <div class="ag-prompt-heading">
+                <span class="ag-settings-icon" aria-hidden="true"></span>
+                <h3 class="ag-card-title">Prompt de evaluación</h3>
+            </div>
+            <p class="ag-prompt-help">
+                Este prompt se guarda en la configuración y se envía al servicio IA como directriz base.
+            </p>
+            <textarea class="ag-textarea ag-prompt-textarea" rows="20" data-action="prompt-input"
+                placeholder="El prompt se generará automáticamente al seleccionar una actividad VPL y configurar los criterios...">${escapeHtml(promptValue())}</textarea>
+            ${totalWeight() !== 100 ? `
+                <div class="ag-info-box ag-info-box--yellow">Los pesos de la rúbrica suman ${formatNumber(totalWeight())}%. Puedes guardar, pero conviene ajustarlos a 100%.</div>
+            ` : ''}
+            ${!state.selectedVPL ? `
+                <div class="ag-info-box ag-info-box--gray">Selecciona una actividad VPL para comenzar.</div>
+            ` : ''}
+            ${state.config ? `
+                <div class="ag-info-box ag-info-box--green">Configuración Moodle #${state.config.id} cargada.</div>
+            ` : ''}
+        `;
+    };
+
+    const renderMainAction = () => {
+        const disabled = !state.selectedVPL || state.savingConfig;
+        region('main-action').innerHTML = `
+            <div class="ag-action-center">
+                <button type="button" class="ag-btn ag-btn--primary ag-btn--continue" data-action="save-continue"
+                    ${disabled ? 'disabled' : ''}>
+                    ${state.savingConfig ? 'Guardando...' : 'Guardar configuración'}
+                </button>
+                ${!state.selectedVPL ? `
+                    <p class="ag-action-help">Selecciona una actividad VPL para continuar</p>
+                ` : ''}
+            </div>
+        `;
+    };
+
+    const renderStudentSelection = () => {
+        const container = region('student-selection');
+        if (!state.showStudentSelection) {
+            container.hidden = true;
+            container.innerHTML = '';
+            return;
+        }
+
+        const filtered = filteredStudents();
+        container.hidden = false;
+        container.innerHTML = `
+            <section class="ag-card">
+                <h3 class="ag-card-title">Selección de estudiantes</h3>
+                <p class="ag-muted">Preparado para la siguiente fase. Esta pantalla todavía no ejecuta evaluación masiva.</p>
+                <div class="ag-filter-grid">
+                    <div class="ag-search-field">
+                        <span class="ag-search-icon" aria-hidden="true"></span>
+                        <input class="ag-input" type="text" placeholder="Buscar por nombre o usuario..."
+                            value="${escapeAttr(state.searchTerm)}" data-action="student-search">
+                        ${state.searchTerm ? `
+                            <button type="button" class="ag-clear-btn" data-action="clear-search" aria-label="Limpiar busqueda">x</button>
+                        ` : ''}
+                    </div>
+                    <select class="ag-select" data-action="status-filter">
+                        <option value="all" ${state.statusFilter === 'all' ? 'selected' : ''}>Todos</option>
+                        <option value="not-evaluated" ${state.statusFilter === 'not-evaluated' ? 'selected' : ''}>Sin prueba IA</option>
+                        <option value="evaluated" ${state.statusFilter === 'evaluated' ? 'selected' : ''}>Con prueba IA</option>
+                    </select>
+                </div>
+                ${filtered.length ? renderStudentsTable(filtered) : `
+                    <div class="ag-empty">No hay entregas registradas para esta actividad VPL.</div>
+                `}
+            </section>
+        `;
+    };
+
+    const renderStudentsTable = filtered => `
+        <div class="ag-student-table-wrap">
+            <table class="ag-student-table">
+                <thead>
+                    <tr>
+                        <th>
+                            <input type="checkbox" data-action="toggle-all-students"
+                                ${state.selectedStudents.length === filtered.length && filtered.length ? 'checked' : ''}>
+                        </th>
+                        <th>Estudiante</th>
+                        <th>Último envío</th>
+                        <th>Intentos</th>
+                        <th>Prueba IA</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${filtered.map(student => `
+                        <tr>
+                            <td>
+                                <input type="checkbox" data-action="toggle-student" data-student-id="${student.id}"
+                                    ${state.selectedStudents.includes(String(student.id)) ? 'checked' : ''}>
+                            </td>
+                            <td>
+                                <strong>${escapeHtml(student.name)}</strong>
+                                <small>${escapeHtml(student.username)}</small>
+                            </td>
+                            <td>${escapeHtml(student.lastSubmissionText)}</td>
+                            <td>${student.submissions.length}</td>
+                            <td>${statusBadge(studentAiStatus(student.id))}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+        <div class="ag-student-actions">
+            <button type="button" class="ag-btn ag-btn--primary ag-btn--full" data-action="send-to-ai"
+                ${state.selectedStudents.length ? '' : 'disabled'}>
+                Evaluación masiva preparada (${state.selectedStudents.length})
+            </button>
+            <button type="button" class="ag-btn ag-btn--outline" data-action="clear-students"
+                ${state.selectedStudents.length ? '' : 'disabled'}>
+                Limpiar selección
+            </button>
+        </div>
+    `;
+
+    const renderTestCodePreview = () => {
+        if (!state.testSubmission) {
+            return '';
+        }
+        return `<div class="ag-code-preview">${submissionPreview(state.testSubmission)}</div>`;
+    };
+
+    const renderAiResults = () => {
+        const result = state.latestAiResult;
+        if (!result) {
+            return '';
+        }
+
+        return `
+            <div class="ag-ai-results">
+                <div class="ag-info-box ag-info-box--green">
+                    <strong>Evaluación completada y guardada</strong>
+                    <span>${escapeHtml(result.studentName)} · ${formatNumber(result.totalgrade)}/100</span>
+                </div>
+                <div class="ag-grade-grid">
+                    <div class="ag-grade-card">
+                        <p>Nota sugerida por IA</p>
+                        <strong>${formatNumber(result.totalgrade)}</strong>
+                        <span>/100</span>
+                    </div>
+                    <div class="ag-breakdown-card">
+                        <p>Desglose por criterio</p>
+                        ${(result.details || []).map(item => `
+                            <div class="ag-breakdown-row">
+                                <span>${escapeHtml(item.criterionName)} (${escapeHtml(item.levelName)}):</span>
+                                <strong>${formatNumber(item.score)}/${formatNumber(item.max)}</strong>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="ag-feedback-box">
+                    <label>Feedback generado por IA</label>
+                    <div>${escapeHtml(result.generalfeedback || 'Sin retroalimentación general.')}</div>
+                </div>
+                ${(result.details || []).map(item => `
+                    <div class="ag-feedback-box">
+                        <label>${escapeHtml(item.criterionName)}</label>
+                        <div>${escapeHtml(item.detail || 'Sin detalle.')}</div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    };
+
+    const renderAiHistory = () => `
+        <div class="ag-history-block">
+            <div class="ag-history-heading">
+                <strong>Pruebas IA guardadas</strong>
+                <span>${state.aiTests.length}</span>
+            </div>
+            ${state.aiTests.length ? `
+                <div class="ag-history-list">
+                    ${state.aiTests.map(item => `
+                        <div class="ag-history-item">
+                            <div>
+                                <strong>${escapeHtml(item.studentName)}</strong>
+                                <span>Entrega #${item.submissionid} · ${escapeHtml(item.timereceivedText)} · ${formatNumber(item.totalgrade)}/100</span>
+                            </div>
+                            <button type="button" class="ag-btn ag-btn--ghost ag-btn--xs" data-action="delete-ai-test"
+                                data-test-id="${item.id}">Eliminar</button>
+                        </div>
+                    `).join('')}
+                </div>
+            ` : '<div class="ag-empty ag-empty--compact">Todavía no hay pruebas IA guardadas.</div>'}
+        </div>
+    `;
+
+    const submissionPreview = submissionId => {
+        if (!submissionId) {
+            return '';
+        }
+        const cached = state.submissions[submissionId];
+        if (state.loadingSubmissions[submissionId]) {
+            return '<div class="ag-empty ag-empty--compact">Cargando entrega...</div>';
+        }
+        if (!cached) {
+            return '<div class="ag-empty ag-empty--compact">Selecciona una entrega para cargar el código.</div>';
+        }
+        return codeBlock('Código del estudiante:', cached);
+    };
+
+    const handleClick = async event => {
+        const trigger = event.target.closest('[data-action]');
+        if (!trigger || !root.contains(trigger)) {
+            return;
+        }
+
+        const action = trigger.dataset.action;
+
+        if (action === 'add-criterion') {
+            addCriterion();
+            renderAll();
+            return;
+        }
+
+        if (action === 'remove-criterion') {
+            removeCriterion(trigger.dataset.criterionId);
+            renderAll();
+            return;
+        }
+
+        if (action === 'add-level') {
+            addLevel(trigger.dataset.criterionId);
+            renderAll();
+            return;
+        }
+
+        if (action === 'remove-level') {
+            removeLevel(trigger.dataset.criterionId, trigger.dataset.levelId);
+            renderAll();
+            return;
+        }
+
+        if (action === 'manual-type') {
+            setManualType(trigger.dataset.value);
+            renderManualCard();
+            await loadSelectedSubmission('manual');
+            return;
+        }
+
+        if (action === 'save-manual') {
+            await saveManualEvaluation();
+            return;
+        }
+
+        if (action === 'delete-manual') {
+            await deleteManual(trigger.dataset.manualId);
+            return;
+        }
+
+        if (action === 'test-source') {
+            setTestSource(trigger.dataset.value);
+            renderAiTestCard();
+            await loadSelectedSubmission('test');
+            return;
+        }
+
+        if (action === 'generate-preview') {
+            await generatePreview();
+            return;
+        }
+
+        if (action === 'delete-ai-test') {
+            await deleteAiTest(trigger.dataset.testId);
+            return;
+        }
+
+        if (action === 'save-continue') {
+            await saveConfiguration();
+            state.showStudentSelection = true;
+            renderAll();
+            setTimeout(() => scrollTo('student-selection'), 80);
+            return;
+        }
+
+        if (action === 'clear-search') {
+            state.searchTerm = '';
+            renderStudentSelection();
+            return;
+        }
+
+        if (action === 'toggle-student') {
+            toggleStudent(trigger.dataset.studentId);
+            renderStudentSelection();
+            return;
+        }
+
+        if (action === 'toggle-all-students') {
+            toggleAllStudents();
+            renderStudentSelection();
+            return;
+        }
+
+        if (action === 'clear-students') {
+            state.selectedStudents = [];
+            renderStudentSelection();
+            return;
+        }
+
+        if (action === 'send-to-ai') {
+            showToast('La evaluación masiva queda para la siguiente interfaz. La configuración ya está guardada.');
+        }
+    };
+
+    const handleInput = event => {
+        const target = event.target;
+        const action = target.dataset.action;
+
+        if (action === 'criterion-field') {
+            const criterion = findCriterion(target.dataset.criterionId);
+            if (!criterion) {
+                return;
+            }
+            const field = target.dataset.field;
+            criterion[field] = field === 'weight' ? numberInRange(target.value, 0, 100) : target.value;
+            if (!state.promptDirty) {
+                state.editablePrompt = generateFullPrompt();
+            }
+            renderPromptCard();
+            renderMainAction();
+            if (field === 'weight') {
+                renderManualCard();
+                renderAiTestCard();
+            }
+            updateTotalText();
+            return;
+        }
+
+        if (action === 'level-field') {
+            const criterion = findCriterion(target.dataset.criterionId);
+            const level = criterion ? criterion.levels.find(item => String(item.id) === String(target.dataset.levelId)) : null;
+            if (!level) {
+                return;
+            }
+            const field = target.dataset.field;
+            level[field] = field === 'percentage' ? numberInRange(target.value, 0, 100) : target.value;
+            if (!state.promptDirty) {
+                state.editablePrompt = generateFullPrompt();
+                renderPromptCard();
+            }
+            if (field === 'percentage' || field === 'name') {
+                updateManualTotal();
+            }
+            return;
+        }
+
+        if (action === 'prompt-input') {
+            state.editablePrompt = target.value;
+            state.promptDirty = true;
+            return;
+        }
+
+        if (action === 'manual-feedback') {
+            state.manualFeedback[target.dataset.criterionId] = target.value;
+            return;
+        }
+
+        if (action === 'manual-observations') {
+            state.manualObservations = target.value;
+            return;
+        }
+
+        if (action === 'student-search') {
+            state.searchTerm = target.value;
+            renderStudentSelection();
+        }
+    };
+
+    const handleChange = async event => {
+        const target = event.target;
+        const action = target.dataset.action;
+
+        if (action === 'select-vpl') {
+            await loadState(target.value);
+            return;
+        }
+
+        if (action === 'manual-student') {
+            state.manualEvalStudent = target.value;
+            state.manualSubmission = defaultSubmissionForStudent(target.value);
+            state.manualLevels = {};
+            state.manualFeedback = {};
+            renderManualCard();
+            await loadSelectedSubmission('manual');
+            return;
+        }
+
+        if (action === 'manual-submission') {
+            state.manualSubmission = target.value;
+            renderManualCard();
+            await loadSelectedSubmission('manual');
+            return;
+        }
+
+        if (action === 'manual-level') {
+            state.manualLevels[target.dataset.criterionId] = target.value;
+            updateManualTotal();
+            return;
+        }
+
+        if (action === 'test-student') {
+            state.selectedTestStudent = target.value;
+            state.testSubmission = defaultSubmissionForStudent(target.value);
+            state.latestAiResult = null;
+            renderAiTestCard();
+            await loadSelectedSubmission('test');
+            return;
+        }
+
+        if (action === 'test-submission') {
+            state.testSubmission = target.value;
+            state.latestAiResult = null;
+            renderAiTestCard();
+            await loadSelectedSubmission('test');
+            return;
+        }
+
+        if (action === 'status-filter') {
+            state.statusFilter = target.value;
+            state.selectedStudents = [];
+            renderStudentSelection();
+        }
+    };
+
+    const addCriterion = () => {
+        const newId = createId('criterion');
+        state.rubricCriteria.push({
+            id: newId,
+            name: 'Nuevo criterio',
+            weight: 0,
+            description: '',
+            levels: [
+                {id: createId('level'), name: 'Excelente', percentage: 100, description: ''},
+                {id: createId('level'), name: 'Aceptable', percentage: 50, description: ''},
+                {id: createId('level'), name: 'Insuficiente', percentage: 0, description: ''}
+            ]
+        });
+        markPromptGenerated();
+    };
+
+    const removeCriterion = criterionId => {
+        if (state.rubricCriteria.length <= 1) {
+            return;
+        }
+        state.rubricCriteria = state.rubricCriteria.filter(item => String(item.id) !== String(criterionId));
+        delete state.manualLevels[criterionId];
+        delete state.manualFeedback[criterionId];
+        markPromptGenerated();
+    };
+
+    const addLevel = criterionId => {
+        const criterion = findCriterion(criterionId);
+        if (!criterion) {
+            return;
+        }
+        criterion.levels.push({id: createId('level'), name: 'Nuevo nivel', percentage: 0, description: ''});
+        markPromptGenerated();
+    };
+
+    const removeLevel = (criterionId, levelId) => {
+        const criterion = findCriterion(criterionId);
+        if (!criterion || criterion.levels.length <= 1) {
+            return;
+        }
+        criterion.levels = criterion.levels.filter(item => String(item.id) !== String(levelId));
+        Object.keys(state.manualLevels).forEach(key => {
+            if (String(state.manualLevels[key]) === String(levelId)) {
+                delete state.manualLevels[key];
+            }
+        });
+        markPromptGenerated();
+    };
+
+    const setManualType = type => {
+        state.manualEvalType = type;
+        state.manualLevels = {};
+        state.manualFeedback = {};
+        state.manualObservations = '';
+        if (type === 'random') {
+            state.manualEvalStudent = randomStudentId();
+            state.manualSubmission = defaultSubmissionForStudent(state.manualEvalStudent);
+        } else {
+            state.manualEvalStudent = '';
+            state.manualSubmission = '';
+        }
+    };
+
+    const setTestSource = type => {
+        state.testCodeSource = type;
+        state.latestAiResult = null;
+        if (type === 'random') {
+            state.randomStudentId = randomStudentId();
+            state.selectedTestStudent = '';
+            state.testSubmission = defaultSubmissionForStudent(state.randomStudentId);
+        } else {
+            state.selectedTestStudent = '';
+            state.randomStudentId = '';
+            state.testSubmission = '';
+        }
+    };
+
+    const saveConfiguration = async() => {
+        if (!state.selectedVPL) {
+            throw new Error('Selecciona una actividad VPL.');
+        }
+
+        state.savingConfig = true;
+        renderMainAction();
+        try {
+            const oldCriteria = clone(state.rubricCriteria);
+            const data = await request('save_config', {
+                vplid: Number(state.selectedVPL),
+                prompt: promptValue(),
+                criteria: serialiseCriteria()
+            });
+
+            state.config = data.config;
+            state.rubricCriteria = normaliseCriteria(data.criteria || []);
+            state.manuals = data.manuals || state.manuals;
+            state.aiTests = data.aiTests || state.aiTests;
+            remapManualSelections(oldCriteria, state.rubricCriteria);
+            state.savingConfig = false;
+            showToast(data.message || 'Configuración guardada.');
+            renderAll();
+            return data;
+        } catch (error) {
+            state.savingConfig = false;
+            renderAll();
+            showToast(error.message || 'No se pudo guardar la configuración.');
+            throw error;
+        }
+    };
+
+    const saveManualEvaluation = async() => {
+        if (!isManualComplete()) {
+            return;
+        }
+
+        state.savingManual = true;
+        renderManualCard();
+        try {
+            await saveConfiguration();
+            const data = await request('save_manual', {
+                configid: Number(state.config.id),
+                studentid: Number(state.manualEvalStudent),
+                submissionid: Number(state.manualSubmission),
+                selectiontype: state.manualEvalType || 'specific',
+                generalobservations: state.manualObservations,
+                criteria: state.rubricCriteria.map(criterion => ({
+                    criterionid: Number(criterion.id),
+                    levelid: Number(state.manualLevels[criterion.id]),
+                    observation: state.manualFeedback[criterion.id] || ''
+                }))
+            });
+
+            state.manuals = data.manuals || [];
+            state.manualLevels = {};
+            state.manualFeedback = {};
+            state.manualObservations = '';
+            state.savingManual = false;
+            renderManualCard();
+            showToast(data.message || 'Calificación manual guardada.');
+        } catch (error) {
+            state.savingManual = false;
+            renderManualCard();
+            showToast(error.message || 'No se pudo guardar la calificación manual.');
+        }
+    };
+
+    const deleteManual = async manualId => {
+        try {
+            const data = await request('delete_manual', {manualid: Number(manualId)});
+            state.manuals = data.manuals || [];
+            renderManualCard();
+            showToast(data.message || 'Calificación manual eliminada.');
+        } catch (error) {
+            showToast(error.message || 'No se pudo eliminar la calificación manual.');
+        }
+    };
+
+    const generatePreview = async() => {
+        if (!canGeneratePreview()) {
+            return;
+        }
+
+        state.isGenerating = true;
+        state.latestAiResult = null;
+        renderAiTestCard();
+
+        try {
+            await saveConfiguration();
+            const data = await request('run_ai_test', {
+                configid: Number(state.config.id),
+                studentid: Number(selectedTestStudentId()),
+                submissionid: Number(state.testSubmission)
+            });
+
+            state.latestAiResult = data.test;
+            state.aiTests = data.aiTests || [];
+            state.isGenerating = false;
+            renderAiTestCard();
+            showToast(data.message || 'Prueba IA guardada.');
+        } catch (error) {
+            state.isGenerating = false;
+            renderAiTestCard();
+            showToast(error.message || 'No se pudo ejecutar la prueba IA.');
+        }
+    };
+
+    const deleteAiTest = async testId => {
+        try {
+            const data = await request('delete_ai_test', {testid: Number(testId)});
+            state.aiTests = data.aiTests || [];
+            if (state.latestAiResult && String(state.latestAiResult.id) === String(testId)) {
+                state.latestAiResult = null;
+            }
+            renderAiTestCard();
+            renderStudentSelection();
+            showToast(data.message || 'Prueba IA eliminada.');
+        } catch (error) {
+            showToast(error.message || 'No se pudo eliminar la prueba IA.');
+        }
+    };
+
+    const loadSelectedSubmission = async type => {
+        const submissionId = type === 'manual' ? state.manualSubmission : state.testSubmission;
+        const studentId = type === 'manual' ? state.manualEvalStudent : selectedTestStudentId();
+        if (!submissionId || !studentId || state.submissions[submissionId] || state.loadingSubmissions[submissionId]) {
+            return;
+        }
+
+        state.loadingSubmissions[submissionId] = true;
+        if (type === 'manual') {
+            renderManualCard();
+        } else {
+            renderAiTestCard();
+        }
+
+        try {
+            const data = await request('get_submission', {
+                vplid: Number(state.selectedVPL),
+                studentid: Number(studentId),
+                submissionid: Number(submissionId)
+            });
+            state.submissions[submissionId] = data;
+        } catch (error) {
+            showToast(error.message || 'No se pudo cargar la entrega.');
+        }
+
+        delete state.loadingSubmissions[submissionId];
+        if (type === 'manual') {
+            renderManualCard();
+        } else {
+            renderAiTestCard();
+        }
+    };
+
+    const request = async(action, payload) => {
+        const response = await Ajax.call([{
+            methodname: 'local_ai_grading_request',
+            args: {
+                courseid: state.courseid,
+                action,
+                payload: JSON.stringify(payload || {})
+            }
+        }])[0];
+
+        if (!response.success) {
+            throw new Error(response.message || 'No se pudo completar la operación.');
+        }
+
+        try {
+            return JSON.parse(response.data || '{}');
+        } catch (error) {
+            throw new Error('La respuesta del backend no es JSON válido.');
+        }
+    };
+
+    const generateFullPrompt = () => {
+        let prompt = '';
+
+        if (state.selectedActivity) {
+            prompt += `DESCRIPCION DEL PROBLEMA\n\n${state.selectedActivity.description || state.selectedActivity.name}\n\n`;
+        }
+
+        if (state.rubricCriteria.length > 0) {
+            prompt += 'CRITERIOS DE EVALUACION\n\n';
+            prompt += state.rubricCriteria.map(criterion => {
+                const levelsText = criterion.levels
+                    .map(level => `  - ${level.name} (${formatNumber(level.percentage)}%): ${level.description}`)
+                    .join('\n');
+                return `- ${criterion.name} (${formatNumber(criterion.weight)}% del total): ${criterion.description}\n${levelsText}`;
+            }).join('\n\n');
+        }
+
+        return prompt;
+    };
+
+    const syncPromptIfNeeded = () => {
+        if (!state.promptDirty) {
+            state.editablePrompt = generateFullPrompt();
+        }
+    };
+
+    const markPromptGenerated = () => {
+        if (!state.promptDirty) {
+            state.editablePrompt = generateFullPrompt();
+        }
+    };
+
+    const promptValue = () => state.editablePrompt || generateFullPrompt();
+
+    const serialiseCriteria = () => state.rubricCriteria.map((criterion, index) => ({
+        id: numericIdOrTemp(criterion.id),
+        name: criterion.name,
+        description: criterion.description,
+        weight: Number(criterion.weight || 0),
+        sortorder: index + 1,
+        levels: criterion.levels.map((level, levelIndex) => ({
+            id: numericIdOrTemp(level.id),
+            name: level.name,
+            percentage: Number(level.percentage || 0),
+            description: level.description,
+            sortorder: levelIndex + 1
+        }))
+    }));
+
+    const normaliseCriteria = criteria => criteria.map(criterion => ({
+        id: String(criterion.id),
+        name: criterion.name || '',
+        description: criterion.description || '',
+        weight: Number(criterion.weight || 0),
+        sortorder: Number(criterion.sortorder || 0),
+        levels: (criterion.levels || []).map(level => ({
+            id: String(level.id),
+            criterionid: String(level.criterionid || criterion.id),
+            name: level.name || '',
+            percentage: Number(level.percentage || 0),
+            description: level.description || '',
+            sortorder: Number(level.sortorder || 0)
+        }))
+    }));
+
+    const remapManualSelections = (oldCriteria, newCriteria) => {
+        const levels = {};
+        const feedback = {};
+        oldCriteria.forEach((oldCriterion, index) => {
+            const newCriterion = newCriteria[index];
+            if (!newCriterion) {
+                return;
+            }
+            if (Object.prototype.hasOwnProperty.call(state.manualFeedback, oldCriterion.id)) {
+                feedback[newCriterion.id] = state.manualFeedback[oldCriterion.id];
+            }
+            const selectedLevel = state.manualLevels[oldCriterion.id];
+            if (!selectedLevel) {
+                return;
+            }
+            const oldLevelIndex = oldCriterion.levels.findIndex(level => String(level.id) === String(selectedLevel));
+            if (oldLevelIndex >= 0 && newCriterion.levels[oldLevelIndex]) {
+                levels[newCriterion.id] = newCriterion.levels[oldLevelIndex].id;
+            }
+        });
+        state.manualLevels = levels;
+        state.manualFeedback = feedback;
+    };
+
+    const canGeneratePreview = () => {
+        return !state.isGenerating
+            && Boolean(state.selectedVPL)
+            && Boolean(selectedTestStudentId())
+            && Boolean(state.testSubmission)
+            && state.rubricCriteria.every(criterion => criterion.levels.length > 0);
+    };
+
+    const selectedTestStudentId = () => state.testCodeSource === 'student' ? state.selectedTestStudent : state.randomStudentId;
+
+    const isManualComplete = () => Boolean(state.selectedVPL && state.manualEvalStudent && state.manualSubmission)
+        && state.rubricCriteria.every(criterion => Boolean(state.manualLevels[criterion.id]));
+
+    const manualTotal = () => {
+        return state.rubricCriteria.reduce((sum, criterion) => {
+            const level = criterion.levels.find(item => String(item.id) === String(state.manualLevels[criterion.id]));
+            return sum + (level ? (Number(criterion.weight || 0) * Number(level.percentage || 0)) / 100 : 0);
+        }, 0);
+    };
+
+    const totalWeight = () => state.rubricCriteria.reduce((sum, criterion) => sum + Number(criterion.weight || 0), 0);
+
+    const updateTotalText = () => {
+        const totalNode = root.querySelector('.ag-total');
+        if (!totalNode) {
+            return;
+        }
+        const total = totalWeight();
+        totalNode.classList.toggle('is-ok', total === 100);
+        totalNode.classList.toggle('is-error', total !== 100);
+        totalNode.textContent = `Total: ${formatNumber(total)}% ${total !== 100 ? '(debe sumar 100%)' : ''}`;
+    };
+
+    const updateManualTotal = () => {
+        const node = root.querySelector('.ag-manual-total strong');
+        if (node) {
+            node.textContent = `${formatNumber(manualTotal())}/100`;
+        }
+        const button = root.querySelector('[data-action="save-manual"]');
+        if (button) {
+            button.disabled = !isManualComplete() || state.savingManual;
+        }
+    };
+
+    const filteredStudents = () => {
+        const search = state.searchTerm.toLowerCase();
+        return state.students.filter(student => {
+            const matchesSearch = student.name.toLowerCase().includes(search) || student.username.toLowerCase().includes(search);
+            const status = studentAiStatus(student.id);
+            const matchesStatus = state.statusFilter === 'all' || status === state.statusFilter;
+            return matchesSearch && matchesStatus;
+        });
+    };
+
+    const toggleStudent = studentId => {
+        const id = String(studentId);
+        if (state.selectedStudents.includes(id)) {
+            state.selectedStudents = state.selectedStudents.filter(item => item !== id);
+        } else {
+            state.selectedStudents.push(id);
+        }
+    };
+
+    const toggleAllStudents = () => {
+        const filtered = filteredStudents();
+        if (state.selectedStudents.length === filtered.length) {
+            state.selectedStudents = [];
+        } else {
+            state.selectedStudents = filtered.map(student => String(student.id));
+        }
+    };
+
+    const choiceButton = (id, value, current, title, description, action, shuffle) => `
+        <button type="button" id="${id}" class="ag-choice ${current === value ? 'is-selected' : ''}"
+            data-action="${action}" data-value="${value}" ${state.selectedVPL && state.students.length ? '' : 'disabled'}>
+            <strong>${shuffle ? '<span class="ag-shuffle-icon" aria-hidden="true"></span>' : ''}${escapeHtml(title)}</strong>
+            <span>${escapeHtml(description)}</span>
+        </button>
+    `;
+
+    const studentSelect = (id, value, placeholder, action) => `
+        <div class="ag-field ag-student-select">
+            <label for="${id}">Selecciona un estudiante</label>
+            <select id="${id}" class="ag-select" data-action="${action}">
+                <option value="">${escapeHtml(placeholder)}</option>
+                ${state.students.map(student => `
+                    <option value="${student.id}" ${String(student.id) === String(value) ? 'selected' : ''}>
+                        ${escapeHtml(student.name)} (${student.submissions.length})
+                    </option>
+                `).join('')}
+            </select>
+        </div>
+    `;
+
+    const submissionSelect = (id, studentId, value, action) => {
+        const student = findStudent(studentId);
+        const submissions = student ? student.submissions : [];
+        return `
+            <div class="ag-field ag-student-select">
+                <label for="${id}">Selecciona una entrega</label>
+                <select id="${id}" class="ag-select" data-action="${action}">
+                    <option value="">Elige una entrega</option>
+                    ${submissions.map(submission => `
+                        <option value="${submission.id}" ${String(submission.id) === String(value) ? 'selected' : ''}>
+                            Intento ${submission.attemptNo} · ${escapeHtml(submission.dateSubmittedText)}
+                        </option>
+                    `).join('')}
+                </select>
+            </div>
+        `;
+    };
+
+    const selectedStudentMessage = (studentId, color, label) => {
+        const student = findStudent(studentId);
+        return `
+            <div class="ag-info-box ag-info-box--${color}">
+                ${escapeHtml(label)}: <strong>${escapeHtml(student ? student.name : '')}</strong>
+            </div>
+        `;
+    };
+
+    const codeBlock = (title, submission) => {
+        const files = submission.files || [];
+        const output = submission.stdout || submission.execution_output || submission.grade_comments || submission.compilation_output || '';
+        return `
+            <div class="ag-code-block">
+                <label>${escapeHtml(title)} ${submission.attemptNo ? `(intento ${submission.attemptNo})` : ''}</label>
+                <pre>${escapeHtml(submission.source_code || 'No se encontraron archivos de código para esta entrega.')}</pre>
+                <div class="ag-io-grid">
+                    <div><strong>Archivos:</strong> ${files.length ? escapeHtml(files.map(file => file.filename).join(', ')) : 'Sin archivos'}</div>
+                    <div><strong>Salida:</strong> ${escapeHtml(output || 'Sin salida disponible')}</div>
+                </div>
+            </div>
+        `;
+    };
+
+    const statusBadge = status => {
+        if (status === 'evaluated') {
+            return '<span class="ag-status ag-status--green">Con prueba</span>';
+        }
+        return '<span class="ag-status ag-status--gray">Sin prueba</span>';
+    };
+
+    const studentAiStatus = studentId => state.aiTests.some(test => String(test.studentid) === String(studentId))
+        ? 'evaluated'
+        : 'not-evaluated';
+
+    const findCriterion = criterionId => state.rubricCriteria.find(item => String(item.id) === String(criterionId));
+
+    const findStudent = studentId => state.students.find(student => String(student.id) === String(studentId));
+
+    const defaultSubmissionForStudent = studentId => {
+        const student = findStudent(studentId);
+        return student && student.submissions.length ? String(student.submissions[0].id) : '';
+    };
+
+    const randomStudentId = () => {
+        if (!state.students.length) {
+            return '';
+        }
+        const index = Math.floor(Math.random() * state.students.length);
+        return String(state.students[index].id);
+    };
+
+    const createId = prefix => {
+        idCounter += 1;
+        return `tmp-${prefix}-${Date.now()}-${idCounter}`;
+    };
+
+    const numericIdOrTemp = value => /^\d+$/.test(String(value)) ? Number(value) : value;
+
+    const numberInRange = (value, min, max) => {
+        const number = parseFloat(value);
+        if (Number.isNaN(number)) {
+            return min;
+        }
+        return Math.min(max, Math.max(min, number));
+    };
+
+    const formatNumber = value => {
+        const number = Number(value || 0);
+        return Number.isInteger(number) ? String(number) : number.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+    };
+
+    const scrollTo = id => {
+        const node = document.getElementById(id);
+        if (node) {
+            node.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }
+    };
+
+    const showToast = message => {
+        const toast = region('toast');
+        toast.textContent = message;
+        toast.hidden = false;
+        clearTimeout(showToast.timer);
+        showToast.timer = setTimeout(() => {
+            toast.hidden = true;
+        }, 4200);
+    };
+
+    const region = name => root.querySelector(`[data-region="${name}"]`);
+
+    const clone = value => JSON.parse(JSON.stringify(value));
+
+    const escapeHtml = value => String(value === null || value === undefined ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+    const escapeAttr = escapeHtml;
+
+    return {
+        init
+    };
+});
