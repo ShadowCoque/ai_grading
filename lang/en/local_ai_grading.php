@@ -130,6 +130,7 @@ $string['invalidjson'] = 'The backend request does not contain valid JSON.';
 $string['invalidlevelselection'] = 'The selected level does not belong to the corresponding criterion.';
 $string['invalidnumber'] = 'One of the numeric values is not valid.';
 $string['invalidpayload'] = 'The external service payload could not be built.';
+$string['invalidstudentselection'] = 'Only course students can be selected for this test.';
 $string['levelnamerequired'] = 'Each level needs a name.';
 $string['levelsrequired'] = 'Each criterion needs at least one level.';
 $string['manualdeleted'] = 'Manual grade deleted.';

@@ -216,6 +216,11 @@
     white-space: pre-wrap;
 }
 
+.ag-prompt-textarea.is-locked {
+    background: rgba(255, 255, 255, 0.82);
+    cursor: default;
+}
+
 .ag-success-line {
     margin: 8px 0 0;
     color: var(--ag-green);
@@ -875,11 +880,35 @@
 }
 
 .ag-prompt-heading {
+    justify-content: space-between;
     margin-bottom: 12px;
+}
+
+.ag-prompt-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
 }
 
 .ag-prompt-heading .ag-card-title {
     color: #1e3a8a;
+}
+
+.ag-prompt-lock {
+    flex: 0 0 auto;
+    color: var(--ag-blue-dark);
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid var(--ag-blue-200);
+}
+
+.ag-prompt-lock:hover {
+    background: var(--ag-white);
+}
+
+.ag-prompt-lock.is-unlocked {
+    color: var(--ag-amber);
+    border-color: var(--ag-amber-200);
 }
 
 .ag-prompt-help {

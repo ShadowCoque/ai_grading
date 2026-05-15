@@ -89,7 +89,9 @@ class vpl_repository {
     public static function get_students_with_submissions(int $courseid, int $vplid): array {
         global $DB;
 
-        self::get_activity($courseid, $vplid);
+        $activity = self::get_activity($courseid, $vplid);
+        $modulecontext = \context_module::instance((int)$activity['cmid']);
+        $coursecontext = \context_course::instance($courseid);
 
         $sql = "SELECT s.id, s.vpl, s.userid, s.datesubmitted, s.grade, s.dategraded, s.nevaluations,
                        s.save_count, s.run_count, u.firstname, u.lastname, u.firstnamephonetic,
@@ -104,6 +106,10 @@ class vpl_repository {
 
         foreach ($records as $record) {
             $userid = (int)$record->userid;
+            if (!self::is_selectable_student($modulecontext, $coursecontext, $userid)) {
+                continue;
+            }
+
             if (!isset($grouped[$userid])) {
                 $grouped[$userid] = [
                     'id' => $userid,
@@ -148,6 +154,8 @@ class vpl_repository {
         global $DB;
 
         $activity = self::get_activity($courseid, $vplid);
+        self::require_selectable_student((int)$activity['cmid'], $courseid, $studentid);
+
         $submission = $DB->get_record('vpl_submissions', [
             'id' => $submissionid,
             'vpl' => $vplid,
@@ -196,6 +204,8 @@ class vpl_repository {
         global $DB;
 
         self::get_activity($courseid, $vplid);
+        $cm = get_coursemodule_from_instance('vpl', $vplid, $courseid, false, MUST_EXIST);
+        self::require_selectable_student((int)$cm->id, $courseid, $studentid);
 
         return $DB->get_record('vpl_submissions', [
             'id' => $submissionid,
@@ -411,6 +421,46 @@ class vpl_repository {
 
         $content = file_get_contents($path);
         return $content === false ? null : self::truncate_text($content);
+    }
+
+    /**
+     * Requires a user to be selectable as a student for this VPL.
+     *
+     * @param int $cmid Course module id.
+     * @param int $courseid Course id.
+     * @param int $userid User id.
+     * @return void
+     */
+    private static function require_selectable_student(int $cmid, int $courseid, int $userid): void {
+        $modulecontext = \context_module::instance($cmid);
+        $coursecontext = \context_course::instance($courseid);
+
+        if (!self::is_selectable_student($modulecontext, $coursecontext, $userid)) {
+            throw new \moodle_exception('invalidstudentselection', 'local_ai_grading');
+        }
+    }
+
+    /**
+     * Returns whether the user should appear in the teacher setup student selectors.
+     *
+     * @param \context_module $modulecontext VPL module context.
+     * @param \context_course $coursecontext Course context.
+     * @param int $userid User id.
+     * @return bool
+     */
+    private static function is_selectable_student(
+        \context_module $modulecontext,
+        \context_course $coursecontext,
+        int $userid
+    ): bool {
+        if (is_siteadmin($userid)) {
+            return false;
+        }
+
+        return has_capability('mod/vpl:submit', $modulecontext, $userid, false)
+            && !has_capability('mod/vpl:grade', $modulecontext, $userid, false)
+            && !has_capability('mod/vpl:manage', $modulecontext, $userid, false)
+            && !has_capability('local/ai_grading:manage', $coursecontext, $userid, false);
     }
 
     /**
