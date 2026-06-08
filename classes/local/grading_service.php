@@ -502,6 +502,191 @@ class grading_service {
     }
 
     /**
+     * Returns the list of published AI feedback for one student in a course.
+     *
+     * Read-only and scoped to the given user: only results that the teacher has
+     * already published (timepublished set) are returned. One entry per VPL
+     * activity (the most recently published one).
+     *
+     * @param int $courseid Course id.
+     * @param int $userid Student id (the current user).
+     * @param int $vplid Optional VPL instance id to restrict to one activity.
+     * @return array
+     */
+    public static function get_student_feedback_list(int $courseid, int $userid, int $vplid = 0): array {
+        global $DB;
+
+        $params = [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'modname' => 'vpl',
+        ];
+        $vplwhere = '';
+        if ($vplid > 0) {
+            $vplwhere = ' AND cfg.vplid = :vplid';
+            $params['vplid'] = $vplid;
+        }
+
+        $sql = "SELECT r.id, r.configid, r.submissionid, r.finaltotalgrade, r.aitotalgrade, r.timepublished,
+                       cfg.vplid, v.name AS vplname, cm.id AS cmid
+                  FROM {local_ai_grading_result} r
+                  JOIN {local_ai_grading_config} cfg ON cfg.id = r.configid
+                  JOIN {vpl} v ON v.id = cfg.vplid
+                  JOIN {course_modules} cm ON cm.instance = v.id
+                  JOIN {modules} m ON m.id = cm.module AND m.name = :modname
+                 WHERE cfg.courseid = :courseid
+                   AND r.studentid = :userid
+                   AND r.timepublished IS NOT NULL
+                   AND cm.deletioninprogress = 0
+                   $vplwhere
+              ORDER BY r.timepublished DESC, r.id DESC";
+
+        $records = $DB->get_records_sql($sql, $params);
+        $context = \context_course::instance($courseid);
+        $list = [];
+        $seen = [];
+        foreach ($records as $record) {
+            if (isset($seen[(int)$record->vplid])) {
+                continue;
+            }
+            $seen[(int)$record->vplid] = true;
+            $grade = $record->finaltotalgrade === null ? null : round((float)$record->finaltotalgrade, 2);
+            $list[] = [
+                'resultid' => (int)$record->id,
+                'vplid' => (int)$record->vplid,
+                'cmid' => (int)$record->cmid,
+                'activityName' => format_string($record->vplname, true, ['context' => $context]),
+                'grade' => $grade === null ? null : self::format_number($grade),
+                'gradeColorClass' => self::grade_color_class($grade, 100),
+                'timepublishedText' => userdate((int)$record->timepublished),
+                'url' => (new \moodle_url('/local/ai_grading/feedback.php', ['id' => (int)$record->cmid]))->out(false),
+            ];
+        }
+        return $list;
+    }
+
+    /**
+     * Returns the full published AI feedback for one student and VPL activity.
+     *
+     * @param int $courseid Course id.
+     * @param int $userid Student id (the current user).
+     * @param int $vplid VPL instance id.
+     * @return array|null Feedback payload, or null when nothing is published yet.
+     */
+    public static function get_student_feedback(int $courseid, int $userid, int $vplid): ?array {
+        global $DB;
+
+        $sql = "SELECT r.*
+                  FROM {local_ai_grading_result} r
+                  JOIN {local_ai_grading_config} cfg ON cfg.id = r.configid
+                 WHERE cfg.courseid = :courseid
+                   AND cfg.vplid = :vplid
+                   AND r.studentid = :userid
+                   AND r.timepublished IS NOT NULL
+              ORDER BY r.timepublished DESC, r.id DESC";
+        $records = $DB->get_records_sql($sql, [
+            'courseid' => $courseid,
+            'vplid' => $vplid,
+            'userid' => $userid,
+        ], 0, 1);
+        $record = $records ? reset($records) : null;
+        if (!$record) {
+            return null;
+        }
+
+        $activity = vpl_repository::get_activity($courseid, $vplid);
+        $grade = $record->finaltotalgrade === null ? null : round((float)$record->finaltotalgrade, 2);
+        $details = self::get_result_details((int)$record->id);
+
+        $criteria = [];
+        foreach ($details as $detail) {
+            $shownscore = $detail['finalscore'] !== null ? $detail['finalscore'] : $detail['score'];
+            $showndetail = trim((string)$detail['finaldetail']) !== '' ? $detail['finaldetail'] : $detail['detail'];
+            $criteria[] = [
+                'name' => $detail['criterionName'],
+                'levelName' => $detail['levelName'],
+                'hasLevel' => trim((string)$detail['levelName']) !== '',
+                'score' => $shownscore === null ? null : self::format_number($shownscore),
+                'max' => self::format_number($detail['max']),
+                'colorClass' => self::grade_color_class($shownscore, (float)$detail['max']),
+                'detail' => $showndetail,
+                'hasDetail' => trim((string)$showndetail) !== '',
+            ];
+        }
+
+        $generalfeedback = trim((string)$record->finalfeedback) !== ''
+            ? (string)$record->finalfeedback
+            : self::combined_ai_feedback((int)$record->id);
+
+        $sourcecode = '';
+        $executionoutput = '';
+        try {
+            $submission = vpl_repository::get_submission($courseid, $vplid, $userid, (int)$record->submissionid);
+            $sourcecode = (string)($submission['source_code'] ?? '');
+            $executionoutput = (string)($submission['execution_output'] ?? '');
+        } catch (\Throwable $ignored) {
+            $sourcecode = '';
+            $executionoutput = '';
+        }
+
+        return [
+            'activityName' => $activity['name'],
+            'activityDescription' => $activity['description'],
+            'cmid' => (int)$activity['cmid'],
+            'grade' => $grade === null ? null : self::format_number($grade),
+            'maxGrade' => 100,
+            'gradeColorClass' => self::grade_color_class($grade, 100),
+            'timesubmittedText' => userdate((int)$record->timesubmitted),
+            'timepublishedText' => userdate((int)$record->timepublished),
+            'reviewedBy' => get_string('feedbackreviewedbyvalue', 'local_ai_grading'),
+            'generalFeedback' => $generalfeedback,
+            'hasGeneralFeedback' => trim((string)$generalfeedback) !== '',
+            'criteria' => $criteria,
+            'hasCriteria' => !empty($criteria),
+            'totalScoreText' => ($grade === null ? '—' : self::format_number($grade)) . ' / 100',
+            'sourceCode' => $sourcecode,
+            'hasSourceCode' => trim($sourcecode) !== '',
+            'executionOutput' => $executionoutput,
+            'hasExecutionOutput' => trim($executionoutput) !== '',
+        ];
+    }
+
+    /**
+     * Maps a grade to a pastel colour class (red/amber/green) for the student view.
+     *
+     * @param float|null $grade Achieved value.
+     * @param float $max Maximum value.
+     * @return string
+     */
+    private static function grade_color_class(?float $grade, float $max): string {
+        if ($grade === null) {
+            return 'aig-grade--none';
+        }
+        $percent = $max > 0 ? ($grade / $max) * 100 : 0;
+        if ($percent >= 80) {
+            return 'aig-grade--green';
+        }
+        if ($percent >= 60) {
+            return 'aig-grade--amber';
+        }
+        return 'aig-grade--red';
+    }
+
+    /**
+     * Formats a number without trailing zeros (e.g. 78.00 -> "78", 78.5 -> "78.5").
+     *
+     * @param float $value Value to format.
+     * @return string
+     */
+    private static function format_number(float $value): string {
+        $rounded = round($value, 2);
+        if ($rounded == (int)$rounded) {
+            return (string)(int)$rounded;
+        }
+        return rtrim(rtrim(number_format($rounded, 2, '.', ''), '0'), '.');
+    }
+
+    /**
      * Returns non-sensitive plugin settings.
      *
      * @return array

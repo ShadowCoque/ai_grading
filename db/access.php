@@ -35,4 +35,13 @@ $capabilities = [
             'manager' => CAP_ALLOW,
         ],
     ],
+
+    // Allows a student to see their own published AI feedback (third interface).
+    'local/ai_grading:viewfeedback' => [
+        'captype' => 'read',
+        'contextlevel' => CONTEXT_COURSE,
+        'archetypes' => [
+            'student' => CAP_ALLOW,
+        ],
+    ],
 ];

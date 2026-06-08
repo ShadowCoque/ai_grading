@@ -7,7 +7,7 @@
 // (at your option) any later version.
 
 /**
- * Version metadata for AI Grading.
+ * Hook callbacks for AI Grading.
  *
  * @package    local_ai_grading
  * @copyright  2026
@@ -16,8 +16,9 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->component = 'local_ai_grading';
-$plugin->release = '0.3.0';
-$plugin->version = 2026060800;
-$plugin->requires = 2025041400;
-$plugin->maturity = MATURITY_ALPHA;
+$callbacks = [
+    [
+        'hook' => \core\hook\output\before_footer_html_generation::class,
+        'callback' => \local_ai_grading\hook\output\before_footer_html_generation::class . '::execute',
+    ],
+];

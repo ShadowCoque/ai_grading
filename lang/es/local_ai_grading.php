@@ -147,3 +147,39 @@ $string['resultpublished'] = 'Resultado publicado.';
 $string['resultsaved'] = 'Resultado revisado guardado.';
 $string['unexpectederror'] = 'Ocurrió un error inesperado al procesar la solicitud.';
 $string['unknownaction'] = 'Acción AJAX no reconocida.';
+
+// Tercera interfaz: retroalimentación del estudiante.
+$string['ai_grading:viewfeedback'] = 'Ver mi retroalimentación de AI Grading';
+
+$string['assistant:title'] = 'Asistente de retroalimentación';
+$string['assistant:open'] = 'Abrir asistente de retroalimentación';
+$string['assistant:close'] = 'Cerrar';
+$string['assistant:greeting'] = 'Hola {$a},';
+$string['assistant:intro'] = 'Tu docente publicó retroalimentación generada con IA para ayudarte a mejorar tus próximas entregas.';
+$string['assistant:current'] = 'Esta actividad';
+$string['assistant:viewfeedback'] = 'Ver retroalimentación';
+
+$string['feedback:pagetitle'] = 'Mi retroalimentación';
+$string['feedback:activitylabel'] = 'Actividad VPL';
+$string['feedback:summary'] = 'Resumen';
+$string['feedback:grade'] = 'Nota';
+$string['feedback:submitted'] = 'Fecha de envío';
+$string['feedback:published'] = 'Fecha de publicación';
+$string['feedback:reviewedby'] = 'Revisado por';
+$string['feedbackreviewedbyvalue'] = 'IA + docente';
+$string['feedback:criteria'] = 'Desglose por criterios';
+$string['feedback:criterion'] = 'Criterio';
+$string['feedback:level'] = 'Nivel alcanzado';
+$string['feedback:score'] = 'Puntaje';
+$string['feedback:comment'] = 'Comentario';
+$string['feedback:total'] = 'Total';
+$string['feedback:general'] = 'Retroalimentación general';
+$string['feedback:nogeneral'] = 'Tu docente no dejó un comentario general adicional.';
+$string['feedback:nocomment'] = 'Sin comentario';
+$string['feedback:mysubmission'] = 'Mi entrega';
+$string['feedback:tabcode'] = 'Código enviado';
+$string['feedback:taboutput'] = 'Salida y resultados';
+$string['feedback:nocode'] = 'No se pudo cargar el código de tu entrega.';
+$string['feedback:nooutput'] = 'No hay salida de ejecución disponible.';
+$string['feedback:notpublished'] = 'Aún no tienes retroalimentación publicada para esta actividad.';
+$string['feedback:backtoactivity'] = 'Volver a la actividad';

@@ -1,0 +1,67 @@
+{{!
+    @template local_ai_grading/student_assistant
+
+    Floating assistant injected on course/VPL pages for students that have
+    published AI feedback. Mirrors the docking pattern used by local_code_mentor
+    but rendered fully server-side (no AJAX): each entry links to feedback.php.
+
+    Context variables:
+    * firstname - Student first name.
+    * count - Number of published feedback entries.
+    * hasmany - True when there is more than one entry.
+    * feedback - List of { activityName, grade, gradeColorClass, url, isCurrent, timepublishedText }.
+}}
+<div class="aig-assistant" data-region="ai-grading-assistant">
+    <button type="button" id="aig-assistant-toggle" class="aig-assistant-toggle"
+        aria-label="{{#str}}assistant:open, local_ai_grading{{/str}}" aria-expanded="false">
+        <svg class="aig-assistant-icon" width="26" height="26" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4z"/>
+            <path d="M18 14l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>
+        </svg>
+        <span class="aig-assistant-badge">{{count}}</span>
+    </button>
+
+    <aside id="aig-assistant-panel" class="aig-assistant-panel" role="dialog" aria-modal="false"
+        aria-label="{{#str}}assistant:title, local_ai_grading{{/str}}">
+        <div class="aig-assistant-header">
+            <div class="aig-assistant-header-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4z"/>
+                </svg>
+                <h2>{{#str}}assistant:title, local_ai_grading{{/str}}</h2>
+            </div>
+            <button type="button" id="aig-assistant-close" class="aig-assistant-close"
+                aria-label="{{#str}}assistant:close, local_ai_grading{{/str}}">&#10005;</button>
+        </div>
+
+        <div class="aig-assistant-body">
+            <p class="aig-assistant-greeting">{{#str}}assistant:greeting, local_ai_grading, {{firstname}}{{/str}}</p>
+            <p class="aig-assistant-intro">{{#str}}assistant:intro, local_ai_grading{{/str}}</p>
+
+            <div class="aig-assistant-list">
+                {{#feedback}}
+                    <a class="aig-assistant-card" href="{{url}}">
+                        <div class="aig-assistant-card-main">
+                            <span class="aig-assistant-card-name">{{activityName}}</span>
+                            {{#isCurrent}}
+                                <span class="aig-assistant-tag">{{#str}}assistant:current, local_ai_grading{{/str}}</span>
+                            {{/isCurrent}}
+                            <span class="aig-assistant-card-date">{{timepublishedText}}</span>
+                        </div>
+                        <div class="aig-assistant-card-side">
+                            {{#grade}}
+                                <span class="aig-assistant-grade {{gradeColorClass}}">{{grade}}<small>/100</small></span>
+                            {{/grade}}
+                            {{^grade}}
+                                <span class="aig-assistant-grade aig-grade--none">&mdash;</span>
+                            {{/grade}}
+                        </div>
+                        <span class="aig-assistant-cta">{{#str}}assistant:viewfeedback, local_ai_grading{{/str}} &rarr;</span>
+                    </a>
+                {{/feedback}}
+            </div>
+        </div>
+    </aside>
+</div>

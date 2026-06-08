@@ -47,3 +47,87 @@ function local_ai_grading_extend_navigation_course($navigation, $course, $contex
 
     $navigation->add_node($node);
 }
+
+/**
+ * Loads the floating student assistant assets when the current page qualifies.
+ *
+ * This runs early (while the navigation is built) so the CSS/JS are queued
+ * before the page <head> is sent. The actual panel HTML is injected later by
+ * the before_footer_html_generation hook.
+ *
+ * @param global_navigation $navigation Global navigation (unused).
+ * @return void
+ */
+function local_ai_grading_extend_navigation(global_navigation $navigation): void {
+    global $PAGE;
+
+    if (local_ai_grading_student_assistant_context() === null) {
+        return;
+    }
+
+    $PAGE->requires->css(new moodle_url('/local/ai_grading/student.css'));
+    $PAGE->requires->js_call_amd('local_ai_grading/student', 'init');
+}
+
+/**
+ * Decides whether the floating student assistant should appear on the current page
+ * and, if so, returns the data needed to render it.
+ *
+ * The assistant only shows when:
+ *  - the user is logged in (not as guest);
+ *  - the page belongs to a real course (not the site home / dashboard);
+ *  - the user can view feedback but is not a teacher/manager of the plugin;
+ *  - the user has at least one published AI feedback in that course.
+ *
+ * The result is cached per request so the gating query only runs once.
+ *
+ * @return array|null Context data, or null when the assistant must not show.
+ */
+function local_ai_grading_student_assistant_context(): ?array {
+    global $PAGE, $USER, $CFG;
+
+    static $cache = false;
+    if ($cache !== false) {
+        return $cache;
+    }
+    $cache = null;
+
+    require_once($CFG->dirroot . '/local/ai_grading/classes/local/grading_service.php');
+
+    if (!isloggedin() || isguestuser() || during_initial_install()) {
+        return $cache;
+    }
+    if (!$PAGE->course || (int)$PAGE->course->id === SITEID) {
+        return $cache;
+    }
+    if ($PAGE->pagelayout === 'login' || $PAGE->pagelayout === 'maintenance') {
+        return $cache;
+    }
+
+    $coursecontext = context_course::instance((int)$PAGE->course->id);
+    if (!has_capability('local/ai_grading:viewfeedback', $coursecontext)
+            || has_capability('local/ai_grading:manage', $coursecontext)) {
+        return $cache;
+    }
+
+    // Restrict to one activity when the current page is a VPL module.
+    $vplid = 0;
+    if (!empty($PAGE->cm) && $PAGE->cm->modname === 'vpl') {
+        $vplid = (int)$PAGE->cm->instance;
+    }
+
+    $feedback = \local_ai_grading\local\grading_service::get_student_feedback_list(
+        (int)$PAGE->course->id,
+        (int)$USER->id
+    );
+    if (empty($feedback)) {
+        return $cache;
+    }
+
+    $cache = [
+        'courseid' => (int)$PAGE->course->id,
+        'currentvplid' => $vplid,
+        'feedback' => $feedback,
+    ];
+    return $cache;
+}

@@ -147,3 +147,39 @@ $string['resultpublished'] = 'Result published.';
 $string['resultsaved'] = 'Reviewed result saved.';
 $string['unexpectederror'] = 'An unexpected error occurred while processing the request.';
 $string['unknownaction'] = 'Unknown AJAX action.';
+
+// Third interface: student feedback.
+$string['ai_grading:viewfeedback'] = 'View my AI Grading feedback';
+
+$string['assistant:title'] = 'Feedback assistant';
+$string['assistant:open'] = 'Open feedback assistant';
+$string['assistant:close'] = 'Close';
+$string['assistant:greeting'] = 'Hi {$a},';
+$string['assistant:intro'] = 'Your teacher published AI-generated feedback to help you improve your next submissions.';
+$string['assistant:current'] = 'This activity';
+$string['assistant:viewfeedback'] = 'View feedback';
+
+$string['feedback:pagetitle'] = 'My feedback';
+$string['feedback:activitylabel'] = 'VPL activity';
+$string['feedback:summary'] = 'Summary';
+$string['feedback:grade'] = 'Grade';
+$string['feedback:submitted'] = 'Submission date';
+$string['feedback:published'] = 'Publication date';
+$string['feedback:reviewedby'] = 'Reviewed by';
+$string['feedbackreviewedbyvalue'] = 'AI + teacher';
+$string['feedback:criteria'] = 'Criteria breakdown';
+$string['feedback:criterion'] = 'Criterion';
+$string['feedback:level'] = 'Level achieved';
+$string['feedback:score'] = 'Score';
+$string['feedback:comment'] = 'Comment';
+$string['feedback:total'] = 'Total';
+$string['feedback:general'] = 'General feedback';
+$string['feedback:nogeneral'] = 'Your teacher did not leave an additional general comment.';
+$string['feedback:nocomment'] = 'No comment';
+$string['feedback:mysubmission'] = 'My submission';
+$string['feedback:tabcode'] = 'Submitted code';
+$string['feedback:taboutput'] = 'Output and results';
+$string['feedback:nocode'] = 'Your submission code could not be loaded.';
+$string['feedback:nooutput'] = 'No execution output available.';
+$string['feedback:notpublished'] = 'You do not have published feedback for this activity yet.';
+$string['feedback:backtoactivity'] = 'Back to the activity';

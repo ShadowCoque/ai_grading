@@ -1,0 +1,105 @@
+{{!
+    @template local_ai_grading/student_feedback
+
+    Third interface: a student's own published AI feedback for one VPL activity.
+    Adapted from the "Interfaz 3 Estudiante" mockup to the real data produced by
+    the teacher interfaces and the n8n/AI contract.
+
+    Context variables come from grading_service::get_student_feedback().
+}}
+<div class="aig-feedback">
+    <header class="aig-feedback-header">
+        <h1>{{#str}}feedback:pagetitle, local_ai_grading{{/str}}</h1>
+        <p class="aig-feedback-activity">
+            <span>{{#str}}feedback:activitylabel, local_ai_grading{{/str}}:</span> {{activityName}}
+        </p>
+        {{#activityDescription}}<p class="aig-feedback-desc">{{activityDescription}}</p>{{/activityDescription}}
+    </header>
+
+    {{! Card 1: summary }}
+    <section class="aig-card">
+        <h2>{{#str}}feedback:summary, local_ai_grading{{/str}}</h2>
+        <div class="aig-summary">
+            <div class="aig-summary-grade">
+                <span class="aig-summary-label">{{#str}}feedback:grade, local_ai_grading{{/str}}</span>
+                <span class="aig-grade-big {{gradeColorClass}}">{{grade}}<small>/ {{maxGrade}}</small></span>
+            </div>
+            <div class="aig-summary-meta">
+                <div><span>{{#str}}feedback:submitted, local_ai_grading{{/str}}:</span> {{timesubmittedText}}</div>
+                <div><span>{{#str}}feedback:published, local_ai_grading{{/str}}:</span> {{timepublishedText}}</div>
+                <div><span>{{#str}}feedback:reviewedby, local_ai_grading{{/str}}:</span> {{reviewedBy}}</div>
+            </div>
+        </div>
+    </section>
+
+    {{! Card 2: rubric breakdown }}
+    {{#hasCriteria}}
+    <section class="aig-card">
+        <h2>{{#str}}feedback:criteria, local_ai_grading{{/str}}</h2>
+        <div class="aig-table-wrap">
+            <table class="aig-table">
+                <thead>
+                    <tr>
+                        <th>{{#str}}feedback:criterion, local_ai_grading{{/str}}</th>
+                        <th>{{#str}}feedback:level, local_ai_grading{{/str}}</th>
+                        <th class="aig-col-score">{{#str}}feedback:score, local_ai_grading{{/str}}</th>
+                        <th>{{#str}}feedback:comment, local_ai_grading{{/str}}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{#criteria}}
+                    <tr>
+                        <td class="aig-criterion-name">{{name}}</td>
+                        <td>{{#hasLevel}}{{levelName}}{{/hasLevel}}{{^hasLevel}}<span class="aig-muted">&mdash;</span>{{/hasLevel}}</td>
+                        <td class="aig-col-score">
+                            <span class="aig-score-pill {{colorClass}}">{{#score}}{{score}}{{/score}}{{^score}}&mdash;{{/score}} / {{max}}</span>
+                        </td>
+                        <td class="aig-criterion-comment">{{#hasDetail}}{{detail}}{{/hasDetail}}{{^hasDetail}}<span class="aig-muted">{{#str}}feedback:nocomment, local_ai_grading{{/str}}</span>{{/hasDetail}}</td>
+                    </tr>
+                    {{/criteria}}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td>{{#str}}feedback:total, local_ai_grading{{/str}}</td>
+                        <td></td>
+                        <td class="aig-col-score"><strong>{{totalScoreText}}</strong></td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </section>
+    {{/hasCriteria}}
+
+    {{! Card 3: general feedback }}
+    <section class="aig-card">
+        <h2>{{#str}}feedback:general, local_ai_grading{{/str}}</h2>
+        {{#hasGeneralFeedback}}
+            <div class="aig-feedback-box">{{generalFeedback}}</div>
+        {{/hasGeneralFeedback}}
+        {{^hasGeneralFeedback}}
+            <p class="aig-muted">{{#str}}feedback:nogeneral, local_ai_grading{{/str}}</p>
+        {{/hasGeneralFeedback}}
+    </section>
+
+    {{! Card 4: my submission (code / output) }}
+    <section class="aig-card">
+        <h2>{{#str}}feedback:mysubmission, local_ai_grading{{/str}}</h2>
+        <div class="aig-tabs" role="tablist">
+            <button type="button" class="aig-tab is-active" data-aig-tab="code" role="tab" aria-selected="true">
+                {{#str}}feedback:tabcode, local_ai_grading{{/str}}
+            </button>
+            <button type="button" class="aig-tab" data-aig-tab="output" role="tab" aria-selected="false">
+                {{#str}}feedback:taboutput, local_ai_grading{{/str}}
+            </button>
+        </div>
+        <div class="aig-tab-panel is-active" data-aig-panel="code">
+            {{#hasSourceCode}}<pre class="aig-code"><code>{{sourceCode}}</code></pre>{{/hasSourceCode}}
+            {{^hasSourceCode}}<p class="aig-muted">{{#str}}feedback:nocode, local_ai_grading{{/str}}</p>{{/hasSourceCode}}
+        </div>
+        <div class="aig-tab-panel" data-aig-panel="output">
+            {{#hasExecutionOutput}}<pre class="aig-code">{{executionOutput}}</pre>{{/hasExecutionOutput}}
+            {{^hasExecutionOutput}}<p class="aig-muted">{{#str}}feedback:nooutput, local_ai_grading{{/str}}</p>{{/hasExecutionOutput}}
+        </div>
+    </section>
+</div>

@@ -1,0 +1,80 @@
+// This file is part of Moodle - https://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+/**
+ * Student-facing behaviour: floating assistant toggle and feedback page tabs.
+ *
+ * Rendered content is server-side; this module only wires up interactions.
+ *
+ * @module     local_ai_grading/student
+ * @copyright  2026
+ * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+define(function() {
+
+    /**
+     * Wires the floating assistant open/close behaviour.
+     */
+    const initAssistant = function() {
+        const toggle = document.getElementById('aig-assistant-toggle');
+        const panel = document.getElementById('aig-assistant-panel');
+        const close = document.getElementById('aig-assistant-close');
+
+        if (!toggle || !panel || toggle.dataset.aigReady === '1') {
+            return;
+        }
+        toggle.dataset.aigReady = '1';
+
+        toggle.addEventListener('click', function() {
+            const open = panel.classList.toggle('is-open');
+            toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+
+        if (close) {
+            close.addEventListener('click', function() {
+                panel.classList.remove('is-open');
+                toggle.setAttribute('aria-expanded', 'false');
+            });
+        }
+    };
+
+    /**
+     * Wires the feedback page tabs (code / output).
+     */
+    const initTabs = function() {
+        const tabs = document.querySelectorAll('.aig-feedback .aig-tab');
+        tabs.forEach(function(tab) {
+            if (tab.dataset.aigReady === '1') {
+                return;
+            }
+            tab.dataset.aigReady = '1';
+
+            tab.addEventListener('click', function() {
+                const target = tab.getAttribute('data-aig-tab');
+                const card = tab.closest('.aig-card');
+                if (!card) {
+                    return;
+                }
+                card.querySelectorAll('.aig-tab').forEach(function(item) {
+                    const active = item === tab;
+                    item.classList.toggle('is-active', active);
+                    item.setAttribute('aria-selected', active ? 'true' : 'false');
+                });
+                card.querySelectorAll('.aig-tab-panel').forEach(function(p) {
+                    p.classList.toggle('is-active', p.getAttribute('data-aig-panel') === target);
+                });
+            });
+        });
+    };
+
+    return {
+        init: function() {
+            initAssistant();
+            initTabs();
+        }
+    };
+});
