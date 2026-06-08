@@ -30,15 +30,15 @@ function xmldb_local_ai_grading_upgrade($oldversion): bool {
     if ($oldversion < 2026051300) {
         $installxml = $CFG->dirroot . '/local/ai_grading/db/install.xml';
         $tables = [
-            'local_ai_grading_config',
-            'local_ai_grading_criterion',
-            'local_ai_grading_level',
-            'local_ai_grading_manual',
-            'local_ai_grading_mancrit',
-            'local_ai_grading_aitest',
-            'local_ai_grading_aitcrit',
-            'local_ai_grading_result',
-            'local_ai_grading_rescrit',
+            'local_ai_grading_config', //configuracion_evaluacion
+            'local_ai_grading_criterion', // criterios
+            'local_ai_grading_level', //niveles
+            'local_ai_grading_manual', //calificacion manual
+            'local_ai_grading_mancrit', //calificacion manual por criterio
+            'local_ai_grading_aitest', // prueba IA
+            'local_ai_grading_aitcrit', // prueba IA por criterio
+            'local_ai_grading_result', // resultados futuros
+            'local_ai_grading_rescrit', // resultados por criterio
         ];
 
         foreach ($tables as $tablename) {
