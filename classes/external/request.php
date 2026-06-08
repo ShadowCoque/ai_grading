@@ -115,6 +115,18 @@ class request extends external_api {
             case 'delete_ai_test':
                 return grading_service::delete_ai_test($courseid, $payload);
 
+            case 'get_results_state':
+                return grading_service::get_results_state($courseid, $payload);
+
+            case 'run_result_ai':
+                return grading_service::run_result_ai($courseid, $payload, $teacherid);
+
+            case 'save_result_review':
+                return grading_service::save_result_review($courseid, $payload, $teacherid);
+
+            case 'publish_result':
+                return grading_service::publish_result($courseid, $payload, $teacherid);
+
             default:
                 throw new \moodle_exception('unknownaction', 'local_ai_grading');
         }

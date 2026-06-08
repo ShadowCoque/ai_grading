@@ -73,6 +73,7 @@ define(['core/ajax'], function(Ajax) {
 
     const createState = () => ({
         courseid: Number(root.dataset.courseid || 0),
+        view: 'setup',
         settings: {mode: 'mock', externalConfigured: false, timeout: 30},
         activities: [],
         selectedActivity: null,
@@ -91,10 +92,10 @@ define(['core/ajax'], function(Ajax) {
         savingConfig: false,
         savingManual: false,
         isGenerating: false,
-        showStudentSelection: false,
         manualEvalType: null,
         manualEvalStudent: '',
         manualSubmission: '',
+        manualEditingId: '',
         manualLevels: {},
         manualFeedback: {},
         manualObservations: '',
@@ -103,9 +104,18 @@ define(['core/ajax'], function(Ajax) {
         testSubmission: '',
         randomStudentId: '',
         latestAiResult: null,
-        selectedStudents: [],
-        searchTerm: '',
-        statusFilter: 'all'
+        resultsState: null,
+        results: [],
+        resultSummary: {total: 0, pending: 0, processing: 0, evaluated: 0, error: 0, published: 0},
+        selectedResults: [],
+        resultSearchTerm: '',
+        resultStatusFilter: 'all',
+        publicationFilter: 'all',
+        bulkRunning: false,
+        activeResult: null,
+        resultDrawerMode: null,
+        resultDraft: {finaltotalgrade: '', finalfeedback: '', studentfeedback: ''},
+        savingResult: false,
     });
 
     const loadState = async(vplid) => {
@@ -151,6 +161,7 @@ define(['core/ajax'], function(Ajax) {
         state.manualEvalType = null;
         state.manualEvalStudent = '';
         state.manualSubmission = '';
+        state.manualEditingId = '';
         state.manualLevels = {};
         state.manualFeedback = {};
         state.manualObservations = '';
@@ -158,9 +169,6 @@ define(['core/ajax'], function(Ajax) {
         state.selectedTestStudent = '';
         state.testSubmission = '';
         state.randomStudentId = '';
-        state.selectedStudents = [];
-        state.searchTerm = '';
-        state.statusFilter = 'all';
     };
 
     const renderLoading = () => {
@@ -170,12 +178,25 @@ define(['core/ajax'], function(Ajax) {
         region('ai-test-card').innerHTML = '';
         region('prompt-card').innerHTML = '';
         region('main-action').innerHTML = '';
-        renderStudentSelection();
+    };
+
+    const clearMainRegions = () => {
+        region('activity-card').innerHTML = '';
+        region('rubric-card').innerHTML = '';
+        region('manual-card').innerHTML = '';
+        region('ai-test-card').innerHTML = '';
+        region('prompt-card').innerHTML = '';
+        region('main-action').innerHTML = '';
     };
 
     const renderAll = () => {
+        root.classList.toggle('is-results-view', state.view === 'results');
         if (state.loading) {
             renderLoading();
+            return;
+        }
+        if (state.view === 'results') {
+            renderResultsView();
             return;
         }
         syncPromptIfNeeded();
@@ -185,7 +206,6 @@ define(['core/ajax'], function(Ajax) {
         renderAiTestCard();
         renderPromptCard();
         renderMainAction();
-        renderStudentSelection();
     };
 
     const renderActivityCard = () => {
@@ -302,24 +322,32 @@ define(['core/ajax'], function(Ajax) {
     `;
 
     const renderManualCard = () => {
+        const canEditReferences = state.manualEditingId || state.manuals.length < 3;
         region('manual-card').innerHTML = `
             <div class="ag-title-row">
                 <h3 class="ag-card-title">Evaluación Manual del Profesor</h3>
-                <span class="ag-badge ag-badge--amber">Opcional</span>
+                <span class="ag-badge ag-badge--amber">${state.manuals.length}/3 referencias</span>
             </div>
             <p class="ag-muted">
-                Guarda una calificación de referencia seleccionando niveles. No se ingresan notas libres por criterio.
+                Guarda hasta 3 calificaciones de referencia para calibrar cómo debe evaluar la IA.
             </p>
 
-            <div class="ag-choice-grid">
-                ${choiceButton('manual-specific', 'specific', state.manualEvalType, 'Estudiante específico', 'Elige un estudiante', 'manual-type')}
-                ${choiceButton('manual-random', 'random', state.manualEvalType, 'Estudiante aleatorio', 'Selección al azar', 'manual-type', true)}
-            </div>
+            ${canEditReferences ? `
+                ${state.manualEditingId ? `
+                    <div class="ag-info-box ag-info-box--yellow">Editando referencia manual #${state.manualEditingId}.</div>
+                ` : ''}
+                <div class="ag-choice-grid">
+                    ${choiceButton('manual-specific', 'specific', state.manualEvalType, 'Estudiante específico', 'Elige un estudiante', 'manual-type')}
+                    ${choiceButton('manual-random', 'random', state.manualEvalType, 'Estudiante aleatorio', 'Selección al azar', 'manual-type', true)}
+                </div>
 
-            ${state.manualEvalType === 'specific' ? studentSelect('manual-student-select', state.manualEvalStudent, 'Elige un estudiante', 'manual-student') : ''}
-            ${state.manualEvalType === 'random' && state.manualEvalStudent ? selectedStudentMessage(state.manualEvalStudent, 'green', 'Estudiante') : ''}
-            ${state.manualEvalStudent ? submissionSelect('manual-submission-select', state.manualEvalStudent, state.manualSubmission, 'manual-submission') : ''}
-            ${state.manualEvalType && state.manualEvalStudent && state.manualSubmission ? renderManualEvaluationWorkspace() : ''}
+                ${state.manualEvalType === 'specific' ? studentSelect('manual-student-select', state.manualEvalStudent, 'Elige un estudiante', 'manual-student') : ''}
+                ${state.manualEvalType === 'random' && state.manualEvalStudent ? selectedStudentMessage(state.manualEvalStudent, 'green', 'Estudiante') : ''}
+                ${state.manualEvalStudent ? submissionSelect('manual-submission-select', state.manualEvalStudent, state.manualSubmission, 'manual-submission') : ''}
+                ${state.manualEvalType && state.manualEvalStudent && state.manualSubmission ? renderManualEvaluationWorkspace() : ''}
+            ` : `
+                <div class="ag-info-box ag-info-box--yellow">Ya tienes 3 referencias manuales. Elimina o edita una para cambiar la calibración.</div>
+            `}
             ${renderManualHistory()}
         `;
     };
@@ -351,8 +379,13 @@ define(['core/ajax'], function(Ajax) {
             </div>
             <button type="button" class="ag-btn ag-btn--primary ag-btn--full" data-action="save-manual"
                 ${isManualComplete() && !state.savingManual ? '' : 'disabled'}>
-                ${state.savingManual ? 'Guardando...' : 'Guardar evaluación manual'}
+                ${state.savingManual ? 'Guardando...' : (state.manualEditingId ? 'Actualizar referencia manual' : 'Guardar referencia manual')}
             </button>
+            ${state.manualEditingId ? `
+                <button type="button" class="ag-btn ag-btn--outline ag-btn--full" data-action="cancel-manual-edit">
+                    Cancelar edición
+                </button>
+            ` : ''}
         </div>
     `;
 
@@ -365,13 +398,17 @@ define(['core/ajax'], function(Ajax) {
             ${state.manuals.length ? `
                 <div class="ag-history-list">
                     ${state.manuals.map(item => `
-                        <div class="ag-history-item">
+                        <div class="ag-history-item ${String(state.manualEditingId) === String(item.id) ? 'is-editing' : ''}">
                             <div>
                                 <strong>${escapeHtml(item.studentName)}</strong>
                                 <span>Entrega #${item.submissionid} · ${escapeHtml(item.timecreatedText)} · ${formatNumber(item.totalgrade)}/100</span>
                             </div>
-                            <button type="button" class="ag-btn ag-btn--ghost ag-btn--xs" data-action="delete-manual"
-                                data-manual-id="${item.id}">Eliminar</button>
+                            <div class="ag-history-actions">
+                                <button type="button" class="ag-btn ag-btn--ghost ag-btn--xs" data-action="edit-manual"
+                                    data-manual-id="${item.id}">Editar</button>
+                                <button type="button" class="ag-btn ag-btn--ghost ag-btn--xs" data-action="delete-manual"
+                                    data-manual-id="${item.id}">Eliminar</button>
+                            </div>
                         </div>
                     `).join('')}
                 </div>
@@ -406,6 +443,13 @@ define(['core/ajax'], function(Ajax) {
                     <span class="ag-play-icon" aria-hidden="true"></span>
                     ${state.isGenerating ? 'Evaluando...' : 'Probar evaluación con IA'}
                 </button>
+            ` : ''}
+            ${state.isGenerating ? `
+                <div class="ag-ai-pending">
+                    <strong>Analizando entrega con IA</strong>
+                    <span>Revisando código, salida de ejecución y rúbrica configurada.</span>
+                    <div aria-hidden="true"></div>
+                </div>
             ` : ''}
             ${renderAiResults()}
             ${renderAiHistory()}
@@ -453,7 +497,7 @@ define(['core/ajax'], function(Ajax) {
             <div class="ag-action-center">
                 <button type="button" class="ag-btn ag-btn--primary ag-btn--continue" data-action="save-continue"
                     ${disabled ? 'disabled' : ''}>
-                    ${state.savingConfig ? 'Guardando...' : 'Guardar configuración'}
+                    ${state.savingConfig ? 'Guardando...' : 'Guardar y continuar a resultados'}
                 </button>
                 ${!state.selectedVPL ? `
                     <p class="ag-action-help">Selecciona una actividad VPL para continuar</p>
@@ -461,88 +505,6 @@ define(['core/ajax'], function(Ajax) {
             </div>
         `;
     };
-
-    const renderStudentSelection = () => {
-        const container = region('student-selection');
-        if (!state.showStudentSelection) {
-            container.hidden = true;
-            container.innerHTML = '';
-            return;
-        }
-
-        const filtered = filteredStudents();
-        container.hidden = false;
-        container.innerHTML = `
-            <section class="ag-card">
-                <h3 class="ag-card-title">Selección de estudiantes</h3>
-                <p class="ag-muted">Preparado para la siguiente fase. Esta pantalla todavía no ejecuta evaluación masiva.</p>
-                <div class="ag-filter-grid">
-                    <div class="ag-search-field">
-                        <span class="ag-search-icon" aria-hidden="true"></span>
-                        <input class="ag-input" type="text" placeholder="Buscar por nombre o usuario..."
-                            value="${escapeAttr(state.searchTerm)}" data-action="student-search">
-                        ${state.searchTerm ? `
-                            <button type="button" class="ag-clear-btn" data-action="clear-search" aria-label="Limpiar busqueda">x</button>
-                        ` : ''}
-                    </div>
-                    <select class="ag-select" data-action="status-filter">
-                        <option value="all" ${state.statusFilter === 'all' ? 'selected' : ''}>Todos</option>
-                        <option value="not-evaluated" ${state.statusFilter === 'not-evaluated' ? 'selected' : ''}>Sin prueba IA</option>
-                        <option value="evaluated" ${state.statusFilter === 'evaluated' ? 'selected' : ''}>Con prueba IA</option>
-                    </select>
-                </div>
-                ${filtered.length ? renderStudentsTable(filtered) : `
-                    <div class="ag-empty">No hay entregas registradas para esta actividad VPL.</div>
-                `}
-            </section>
-        `;
-    };
-
-    const renderStudentsTable = filtered => `
-        <div class="ag-student-table-wrap">
-            <table class="ag-student-table">
-                <thead>
-                    <tr>
-                        <th>
-                            <input type="checkbox" data-action="toggle-all-students"
-                                ${state.selectedStudents.length === filtered.length && filtered.length ? 'checked' : ''}>
-                        </th>
-                        <th>Estudiante</th>
-                        <th>Último envío</th>
-                        <th>Intentos</th>
-                        <th>Prueba IA</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${filtered.map(student => `
-                        <tr>
-                            <td>
-                                <input type="checkbox" data-action="toggle-student" data-student-id="${student.id}"
-                                    ${state.selectedStudents.includes(String(student.id)) ? 'checked' : ''}>
-                            </td>
-                            <td>
-                                <strong>${escapeHtml(student.name)}</strong>
-                                <small>${escapeHtml(student.username)}</small>
-                            </td>
-                            <td>${escapeHtml(student.lastSubmissionText)}</td>
-                            <td>${student.submissions.length}</td>
-                            <td>${statusBadge(studentAiStatus(student.id))}</td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        </div>
-        <div class="ag-student-actions">
-            <button type="button" class="ag-btn ag-btn--primary ag-btn--full" data-action="send-to-ai"
-                ${state.selectedStudents.length ? '' : 'disabled'}>
-                Evaluación masiva preparada (${state.selectedStudents.length})
-            </button>
-            <button type="button" class="ag-btn ag-btn--outline" data-action="clear-students"
-                ${state.selectedStudents.length ? '' : 'disabled'}>
-                Limpiar selección
-            </button>
-        </div>
-    `;
 
     const renderTestCodePreview = () => {
         if (!state.testSubmission) {
@@ -556,24 +518,30 @@ define(['core/ajax'], function(Ajax) {
         if (!result) {
             return '';
         }
+        const details = result.details || [];
+        const total = aiResultTotal(result);
+        const totalStyle = gradeStyle(total, 100);
 
         return `
             <div class="ag-ai-results">
-                <div class="ag-info-box ag-info-box--green">
+                <div class="ag-ai-summary" style="${totalStyle}">
                     <strong>Evaluación completada y guardada</strong>
-                    <span>${escapeHtml(result.studentName)} · ${formatNumber(result.totalgrade)}/100</span>
+                    <span>${escapeHtml(result.studentName)} · ${formatNumber(total)}/100</span>
                 </div>
                 <div class="ag-grade-grid">
-                    <div class="ag-grade-card">
+                    <div class="ag-grade-card" style="${totalStyle}">
                         <p>Nota sugerida por IA</p>
-                        <strong>${formatNumber(result.totalgrade)}</strong>
+                        <strong>${formatNumber(total)}</strong>
                         <span>/100</span>
                     </div>
                     <div class="ag-breakdown-card">
                         <p>Desglose por criterio</p>
-                        ${(result.details || []).map(item => `
-                            <div class="ag-breakdown-row">
-                                <span>${escapeHtml(item.criterionName)} (${escapeHtml(item.levelName)}):</span>
+                        ${details.map(item => `
+                            <div class="ag-breakdown-row" style="${gradeStyle(item.score, item.max)}">
+                                <div>
+                                    <span>${escapeHtml(item.criterionName)}</span>
+                                    <small>${escapeHtml(item.levelName)} · ${formatNumber(gradePercent(item.score, item.max))}%</small>
+                                </div>
                                 <strong>${formatNumber(item.score)}/${formatNumber(item.max)}</strong>
                             </div>
                         `).join('')}
@@ -583,8 +551,8 @@ define(['core/ajax'], function(Ajax) {
                     <label>Feedback generado por IA</label>
                     <div>${escapeHtml(result.generalfeedback || 'Sin retroalimentación general.')}</div>
                 </div>
-                ${(result.details || []).map(item => `
-                    <div class="ag-feedback-box">
+                ${details.map(item => `
+                    <div class="ag-feedback-box ag-feedback-box--criterion" style="${gradeStyle(item.score, item.max)}">
                         <label>${escapeHtml(item.criterionName)}</label>
                         <div>${escapeHtml(item.detail || 'Sin detalle.')}</div>
                     </div>
@@ -615,6 +583,244 @@ define(['core/ajax'], function(Ajax) {
             ` : '<div class="ag-empty ag-empty--compact">Todavía no hay pruebas IA guardadas.</div>'}
         </div>
     `;
+
+    const renderResultsView = () => {
+        root.classList.add('is-results-view');
+        clearMainRegions();
+        region('activity-card').innerHTML = renderResultsContext();
+        region('rubric-card').innerHTML = renderResultsTable();
+        region('prompt-card').innerHTML = '';
+        renderResultDrawer();
+    };
+
+    const renderResultsContext = () => {
+        const summary = state.resultSummary || {};
+        const activity = state.resultsState ? state.resultsState.activity : state.selectedActivity;
+        return `
+            <div class="ag-results-heading">
+                <div>
+                    <h3 class="ag-card-title">Resultados de evaluación IA</h3>
+                    <p class="ag-muted">Revisa, ajusta y publica calificaciones generadas con la configuración aprobada.</p>
+                </div>
+                <button type="button" class="ag-btn ag-btn--outline ag-btn--sm" data-action="back-to-setup">
+                    Volver a configuración
+                </button>
+            </div>
+            <div class="ag-results-context">
+                <div>
+                    <span>Actividad VPL</span>
+                    <strong>${escapeHtml(activity ? activity.name : 'Actividad seleccionada')}</strong>
+                    <small>${escapeHtml(activity && activity.description ? activity.description : 'Sin descripción disponible.')}</small>
+                </div>
+                <div class="ag-result-metrics">
+                    ${resultMetric('Total', summary.total || 0)}
+                    ${resultMetric('Evaluados', summary.evaluated || 0)}
+                    ${resultMetric('Pendientes', (summary.pending || 0) + (summary.processing || 0))}
+                    ${resultMetric('Publicados', summary.published || 0)}
+                </div>
+            </div>
+        `;
+    };
+
+    const renderResultsTable = () => {
+        const filtered = filteredResults();
+        return `
+            <div class="ag-results-toolbar">
+                <div>
+                    <h3 class="ag-card-title">Gestión de estudiantes</h3>
+                    <p class="ag-muted">La evaluación masiva procesa una entrega a la vez usando el mismo webhook externo.</p>
+                </div>
+                <button type="button" class="ag-btn ag-btn--primary ag-btn--sm" data-action="run-selected-results"
+                    ${selectedRunnableResults().length && !state.bulkRunning ? '' : 'disabled'}>
+                    ${state.bulkRunning ? 'Evaluando...' : `Evaluar seleccionados (${selectedRunnableResults().length})`}
+                </button>
+            </div>
+            <div class="ag-result-filters">
+                <input class="ag-input" type="text" placeholder="Buscar estudiante o usuario..."
+                    value="${escapeAttr(state.resultSearchTerm)}" data-action="result-search">
+                <select class="ag-select" data-action="result-status-filter">
+                    <option value="all" ${state.resultStatusFilter === 'all' ? 'selected' : ''}>Todos los estados IA</option>
+                    <option value="pending" ${state.resultStatusFilter === 'pending' ? 'selected' : ''}>Pendiente</option>
+                    <option value="processing" ${state.resultStatusFilter === 'processing' ? 'selected' : ''}>En proceso</option>
+                    <option value="evaluated" ${state.resultStatusFilter === 'evaluated' ? 'selected' : ''}>Evaluado</option>
+                    <option value="error" ${state.resultStatusFilter === 'error' ? 'selected' : ''}>Error</option>
+                </select>
+                <select class="ag-select" data-action="publication-filter">
+                    <option value="all" ${state.publicationFilter === 'all' ? 'selected' : ''}>Toda publicación</option>
+                    <option value="published" ${state.publicationFilter === 'published' ? 'selected' : ''}>Publicado</option>
+                    <option value="not_published" ${state.publicationFilter === 'not_published' ? 'selected' : ''}>No publicado</option>
+                </select>
+            </div>
+            ${state.bulkRunning ? `
+                <div class="ag-ai-pending">
+                    <strong>Evaluación masiva en curso</strong>
+                    <span>Procesando estudiantes seleccionados uno por uno.</span>
+                    <div aria-hidden="true"></div>
+                </div>
+            ` : ''}
+            ${filtered.length ? `
+                <div class="ag-results-table-wrap">
+                    <table class="ag-results-table">
+                        <thead>
+                            <tr>
+                                <th>
+                                    <input type="checkbox" data-action="toggle-all-results"
+                                        ${state.selectedResults.length === filtered.length && filtered.length ? 'checked' : ''}>
+                                </th>
+                                <th>Estudiante y entrega</th>
+                                <th>Feedback IA</th>
+                                <th>Estado IA</th>
+                                <th>Nota IA</th>
+                                <th>Nota final</th>
+                                <th>Publicación</th>
+                                <th>Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${filtered.map(renderResultRow).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            ` : '<div class="ag-empty">No hay estudiantes que coincidan con los filtros.</div>'}
+            ${state.selectedResults.length ? `
+                <div class="ag-batch-bar">
+                    <span><strong>${state.selectedResults.length}</strong> resultado(s) seleccionado(s)</span>
+                    <div>
+                        <button type="button" class="ag-btn ag-btn--outline ag-btn--sm" data-action="clear-result-selection">Limpiar</button>
+                        <button type="button" class="ag-btn ag-btn--primary ag-btn--sm" data-action="publish-selected-results"
+                            ${selectedPublishableResults().length ? '' : 'disabled'}>
+                            Publicar listos (${selectedPublishableResults().length})
+                        </button>
+                    </div>
+                </div>
+            ` : ''}
+        `;
+    };
+
+    const renderResultRow = result => `
+        <tr>
+            <td>
+                <input type="checkbox" data-action="toggle-result" data-result-id="${result.id}"
+                    ${state.selectedResults.includes(String(result.id)) ? 'checked' : ''}>
+            </td>
+            <td>
+                <strong>${escapeHtml(result.studentName)}</strong>
+                <span>${escapeHtml(result.studentUsername)} · intento #${result.attemptnumber} · ${escapeHtml(result.timesubmittedText)}</span>
+            </td>
+            <td>
+                <button type="button" class="ag-result-feedback-preview" data-action="view-result" data-result-id="${result.id}">
+                    ${escapeHtml(resultFeedbackPreview(result))}
+                </button>
+            </td>
+            <td>${resultStatusBadge(result.aistatus)}</td>
+            <td>${result.aitotalgrade === null ? '<span class="ag-muted-cell">-</span>' : `<strong>${formatNumber(result.aitotalgrade)}</strong>`}</td>
+            <td>${result.finaltotalgrade === null ? '<span class="ag-muted-cell">-</span>' : `<strong>${formatNumber(result.finaltotalgrade)}</strong>`}</td>
+            <td>${publicationBadge(result.publicationStatus)}</td>
+            <td>
+                <div class="ag-row-actions">
+                    <button type="button" class="ag-icon-btn" data-action="view-result" data-result-id="${result.id}" title="Ver">V</button>
+                    <button type="button" class="ag-icon-btn" data-action="edit-result" data-result-id="${result.id}" title="Editar">E</button>
+                    <button type="button" class="ag-icon-btn" data-action="run-one-result" data-result-id="${result.id}" title="Evaluar IA"
+                        ${state.bulkRunning ? 'disabled' : ''}>IA</button>
+                    <button type="button" class="ag-icon-btn" data-action="publish-result" data-result-id="${result.id}" title="Publicar"
+                        ${isPublishable(result) ? '' : 'disabled'}>✓</button>
+                </div>
+            </td>
+        </tr>
+    `;
+
+    const renderResultsConfigSummary = () => {
+        const config = state.resultsState ? state.resultsState.config : state.config;
+        const criteria = state.resultsState ? state.resultsState.criteria : state.rubricCriteria;
+        return `
+            <div class="ag-prompt-heading">
+                <div class="ag-prompt-title">
+                    <span class="ag-settings-icon" aria-hidden="true"></span>
+                    <h3 class="ag-card-title">Configuración usada</h3>
+                </div>
+            </div>
+            <p class="ag-prompt-help">Estos criterios y directrices se reutilizan para cada estudiante evaluado.</p>
+            <div class="ag-results-config">
+                <strong>Prompt base</strong>
+                <pre>${escapeHtml(config ? config.prompt : promptValue())}</pre>
+                <strong>Criterios</strong>
+                ${criteria.map(criterion => `
+                    <div class="ag-config-criterion">
+                        <span>${escapeHtml(criterion.name)} · ${formatNumber(criterion.weight)}%</span>
+                        <small>${escapeHtml(criterion.description || 'Sin descripción')}</small>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    };
+
+    const renderResultDrawer = () => {
+        const result = state.activeResult;
+        if (!result) {
+            region('main-action').innerHTML = '';
+            return;
+        }
+        const editable = state.resultDrawerMode === 'edit';
+        const submission = state.submissions[result.submissionid];
+        region('main-action').innerHTML = `
+            <div class="ag-drawer-backdrop" data-action="close-result-drawer"></div>
+            <aside class="ag-result-drawer" role="dialog" aria-modal="true" aria-label="Resultado de ${escapeAttr(result.studentName)}">
+                <div class="ag-drawer-header">
+                    <div>
+                        <h3>${escapeHtml(result.studentName)}</h3>
+                        <span>${escapeHtml(result.studentUsername)} · entrega #${result.submissionid}</span>
+                    </div>
+                    <button type="button" class="ag-icon-btn" data-action="close-result-drawer" aria-label="Cerrar">x</button>
+                </div>
+                <div class="ag-drawer-body">
+                    ${result.errordetail ? `<div class="ag-info-box ag-info-box--yellow">${escapeHtml(result.errordetail)}</div>` : ''}
+                    <div class="ag-drawer-score" style="${gradeStyle(result.aitotalgrade || 0, 100)}">
+                        <span>Nota IA</span>
+                        <strong>${result.aitotalgrade === null ? '-' : formatNumber(result.aitotalgrade)}</strong>
+                    </div>
+                    <section>
+                        <h4>Desglose por criterio</h4>
+                        ${(result.details || []).length ? result.details.map(item => `
+                            <div class="ag-breakdown-row" style="${gradeStyle(item.score || 0, item.max || 100)}">
+                                <div>
+                                    <span>${escapeHtml(item.criterionName)}</span>
+                                    <small>${escapeHtml(item.levelName || 'Sin nivel')} · ${escapeHtml(item.detail || 'Sin detalle.')}</small>
+                                </div>
+                                <strong>${item.score === null ? '-' : formatNumber(item.score)}/${formatNumber(item.max)}</strong>
+                            </div>
+                        `).join('') : '<div class="ag-empty ag-empty--compact">Todavía no hay evaluación IA.</div>'}
+                    </section>
+                    <section>
+                        <h4>Revisión docente</h4>
+                        <label>Nota final</label>
+                        <input class="ag-input" type="number" min="0" max="100" step="0.01" data-action="result-draft-field"
+                            data-field="finaltotalgrade" value="${escapeAttr(state.resultDraft.finaltotalgrade)}" ${editable ? '' : 'readonly'}>
+                        <label>Feedback final para estudiante</label>
+                        <textarea class="ag-textarea ag-textarea--sm" rows="5" data-action="result-draft-field"
+                            data-field="finalfeedback" ${editable ? '' : 'readonly'}>${escapeHtml(state.resultDraft.finalfeedback)}</textarea>
+                        <label>Notas internas</label>
+                        <textarea class="ag-textarea ag-textarea--sm" rows="3" data-action="result-draft-field"
+                            data-field="studentfeedback" ${editable ? '' : 'readonly'}>${escapeHtml(state.resultDraft.studentfeedback)}</textarea>
+                    </section>
+                    <section>
+                        <h4>Código y salida VPL</h4>
+                        ${submission ? submissionPreview(result.submissionid) : '<div class="ag-empty ag-empty--compact">Cargando entrega...</div>'}
+                    </section>
+                </div>
+                <div class="ag-drawer-footer">
+                    <button type="button" class="ag-btn ag-btn--outline ag-btn--sm" data-action="close-result-drawer">Cerrar</button>
+                    ${editable ? `
+                        <button type="button" class="ag-btn ag-btn--primary ag-btn--sm" data-action="save-result-review"
+                            ${state.savingResult ? 'disabled' : ''}>${state.savingResult ? 'Guardando...' : 'Guardar revisión'}</button>
+                    ` : `
+                        <button type="button" class="ag-btn ag-btn--outline ag-btn--sm" data-action="edit-result" data-result-id="${result.id}">Editar</button>
+                    `}
+                    <button type="button" class="ag-btn ag-btn--primary ag-btn--sm" data-action="publish-result" data-result-id="${result.id}"
+                        ${isPublishable(result) ? '' : 'disabled'}>Publicar</button>
+                </div>
+            </aside>
+        `;
+    };
 
     const submissionPreview = submissionId => {
         if (!submissionId) {
@@ -679,6 +885,17 @@ define(['core/ajax'], function(Ajax) {
             return;
         }
 
+        if (action === 'edit-manual') {
+            await editManual(trigger.dataset.manualId);
+            return;
+        }
+
+        if (action === 'cancel-manual-edit') {
+            resetManualDraft();
+            renderManualCard();
+            return;
+        }
+
         if (action === 'test-source') {
             setTestSource(trigger.dataset.value);
             renderAiTestCard();
@@ -703,40 +920,77 @@ define(['core/ajax'], function(Ajax) {
         }
 
         if (action === 'save-continue') {
-            await saveConfiguration();
-            state.showStudentSelection = true;
+            await openResultsView();
+            return;
+        }
+
+        if (action === 'back-to-setup') {
+            state.view = 'setup';
+            state.activeResult = null;
             renderAll();
-            setTimeout(() => scrollTo('student-selection'), 80);
             return;
         }
 
-        if (action === 'clear-search') {
-            state.searchTerm = '';
-            renderStudentSelection();
+        if (action === 'toggle-result') {
+            toggleResult(trigger.dataset.resultId);
+            renderResultsView();
             return;
         }
 
-        if (action === 'toggle-student') {
-            toggleStudent(trigger.dataset.studentId);
-            renderStudentSelection();
+        if (action === 'toggle-all-results') {
+            toggleAllResults();
+            renderResultsView();
             return;
         }
 
-        if (action === 'toggle-all-students') {
-            toggleAllStudents();
-            renderStudentSelection();
+        if (action === 'clear-result-selection') {
+            state.selectedResults = [];
+            renderResultsView();
             return;
         }
 
-        if (action === 'clear-students') {
-            state.selectedStudents = [];
-            renderStudentSelection();
+        if (action === 'run-selected-results') {
+            await runSelectedResults();
             return;
         }
 
-        if (action === 'send-to-ai') {
-            showToast('La evaluación masiva queda para la siguiente interfaz. La configuración ya está guardada.');
+        if (action === 'run-one-result') {
+            await runOneResult(trigger.dataset.resultId);
+            return;
         }
+
+        if (action === 'view-result') {
+            await openResultDrawer(trigger.dataset.resultId, 'view');
+            return;
+        }
+
+        if (action === 'edit-result') {
+            await openResultDrawer(trigger.dataset.resultId, 'edit');
+            return;
+        }
+
+        if (action === 'close-result-drawer') {
+            state.activeResult = null;
+            state.resultDrawerMode = null;
+            renderResultDrawer();
+            return;
+        }
+
+        if (action === 'save-result-review') {
+            await saveResultReview();
+            return;
+        }
+
+        if (action === 'publish-result') {
+            await publishResult(trigger.dataset.resultId);
+            return;
+        }
+
+        if (action === 'publish-selected-results') {
+            await publishSelectedResults();
+            return;
+        }
+
     };
 
     const handleInput = event => {
@@ -790,6 +1044,17 @@ define(['core/ajax'], function(Ajax) {
             return;
         }
 
+        if (action === 'result-search') {
+            state.resultSearchTerm = target.value;
+            renderResultsView();
+            return;
+        }
+
+        if (action === 'result-draft-field') {
+            state.resultDraft[target.dataset.field] = target.value;
+            return;
+        }
+
         if (action === 'manual-feedback') {
             state.manualFeedback[target.dataset.criterionId] = target.value;
             return;
@@ -800,10 +1065,6 @@ define(['core/ajax'], function(Ajax) {
             return;
         }
 
-        if (action === 'student-search') {
-            state.searchTerm = target.value;
-            renderStudentSelection();
-        }
     };
 
     const handleChange = async event => {
@@ -855,10 +1116,17 @@ define(['core/ajax'], function(Ajax) {
             return;
         }
 
-        if (action === 'status-filter') {
-            state.statusFilter = target.value;
-            state.selectedStudents = [];
-            renderStudentSelection();
+        if (action === 'result-status-filter') {
+            state.resultStatusFilter = target.value;
+            state.selectedResults = [];
+            renderResultsView();
+            return;
+        }
+
+        if (action === 'publication-filter') {
+            state.publicationFilter = target.value;
+            state.selectedResults = [];
+            renderResultsView();
         }
     };
 
@@ -981,6 +1249,172 @@ define(['core/ajax'], function(Ajax) {
         }
     };
 
+    const openResultsView = async() => {
+        try {
+            await saveConfiguration();
+            await loadResultsState(state.config.id);
+            state.view = 'results';
+            renderAll();
+            scrollTo(rootSelector);
+        } catch (error) {
+            showToast(error.message || 'No se pudo abrir la gestión de resultados.');
+        }
+    };
+
+    const loadResultsState = async configId => {
+        const data = await request('get_results_state', {configid: Number(configId)});
+        state.resultsState = data;
+        state.results = data.results || [];
+        state.resultSummary = data.summary || state.resultSummary;
+        state.selectedResults = [];
+        state.resultSearchTerm = '';
+        state.resultStatusFilter = 'all';
+        state.publicationFilter = 'all';
+        return data;
+    };
+
+    const runOneResult = async resultId => {
+        if (!resultId || state.bulkRunning) {
+            return;
+        }
+        state.bulkRunning = true;
+        markResultStatus(resultId, 'processing');
+        renderResultsView();
+        try {
+            const data = await request('run_result_ai', {resultid: Number(resultId)});
+            applyResultsResponse(data);
+            showToast(data.message || 'Resultado IA guardado.');
+        } catch (error) {
+            showToast(error.message || 'No se pudo evaluar la entrega.');
+        }
+        state.bulkRunning = false;
+        renderResultsView();
+    };
+
+    const runSelectedResults = async() => {
+        const ids = selectedRunnableResults().map(result => String(result.id));
+        if (!ids.length) {
+            return;
+        }
+
+        state.bulkRunning = true;
+        for (const id of ids) {
+            markResultStatus(id, 'processing');
+            renderResultsView();
+            try {
+                const data = await request('run_result_ai', {resultid: Number(id)});
+                applyResultsResponse(data);
+            } catch (error) {
+                showToast(error.message || 'No se pudo evaluar una entrega.');
+            }
+        }
+        state.bulkRunning = false;
+        state.selectedResults = [];
+        renderResultsView();
+        showToast('Evaluación masiva finalizada.');
+    };
+
+    const openResultDrawer = async(resultId, mode) => {
+        const result = findResult(resultId);
+        if (!result) {
+            return;
+        }
+        state.activeResult = result;
+        state.resultDrawerMode = mode;
+        state.resultDraft = {
+            finaltotalgrade: result.finaltotalgrade === null
+                ? (result.aitotalgrade === null ? '' : String(result.aitotalgrade))
+                : String(result.finaltotalgrade),
+            finalfeedback: result.finalfeedback || resultAiFeedback(result),
+            studentfeedback: result.studentfeedback || '',
+        };
+        renderResultDrawer();
+        await loadResultSubmission(result);
+        renderResultDrawer();
+    };
+
+    const saveResultReview = async() => {
+        if (!state.activeResult) {
+            return;
+        }
+        state.savingResult = true;
+        renderResultDrawer();
+        try {
+            const data = await request('save_result_review', {
+                resultid: Number(state.activeResult.id),
+                finaltotalgrade: Number(state.resultDraft.finaltotalgrade || 0),
+                finalfeedback: state.resultDraft.finalfeedback,
+                studentfeedback: state.resultDraft.studentfeedback,
+            });
+            applyResultsResponse(data);
+            state.activeResult = data.result;
+            state.resultDrawerMode = 'view';
+            showToast(data.message || 'Resultado guardado.');
+        } catch (error) {
+            showToast(error.message || 'No se pudo guardar la revisión.');
+        }
+        state.savingResult = false;
+        renderResultsView();
+    };
+
+    const publishResult = async resultId => {
+        const id = resultId || (state.activeResult && state.activeResult.id);
+        if (!id) {
+            return;
+        }
+        try {
+            const data = await request('publish_result', {resultid: Number(id)});
+            applyResultsResponse(data);
+            if (state.activeResult && String(state.activeResult.id) === String(id)) {
+                state.activeResult = data.result;
+            }
+            showToast(data.message || 'Resultado publicado.');
+        } catch (error) {
+            showToast(error.message || 'No se pudo publicar el resultado.');
+        }
+        renderResultsView();
+    };
+
+    const publishSelectedResults = async() => {
+        const ids = selectedPublishableResults().map(result => String(result.id));
+        for (const id of ids) {
+            try {
+                const data = await request('publish_result', {resultid: Number(id)});
+                applyResultsResponse(data);
+            } catch (error) {
+                showToast(error.message || 'No se pudo publicar un resultado.');
+            }
+        }
+        state.selectedResults = [];
+        renderResultsView();
+    };
+
+    const applyResultsResponse = data => {
+        state.results = data.results || state.results;
+        state.resultSummary = data.summary || state.resultSummary;
+        if (data.result && state.activeResult && String(data.result.id) === String(state.activeResult.id)) {
+            state.activeResult = data.result;
+        }
+    };
+
+    const loadResultSubmission = async result => {
+        if (!result || state.submissions[result.submissionid] || state.loadingSubmissions[result.submissionid]) {
+            return;
+        }
+        state.loadingSubmissions[result.submissionid] = true;
+        try {
+            const data = await request('get_submission', {
+                vplid: Number(state.resultsState.activity.id),
+                studentid: Number(result.studentid),
+                submissionid: Number(result.submissionid)
+            });
+            state.submissions[result.submissionid] = data;
+        } catch (error) {
+            showToast(error.message || 'No se pudo cargar la entrega.');
+        }
+        delete state.loadingSubmissions[result.submissionid];
+    };
+
     const saveManualEvaluation = async() => {
         if (!isManualComplete()) {
             return;
@@ -992,6 +1426,7 @@ define(['core/ajax'], function(Ajax) {
             await saveConfiguration();
             const data = await request('save_manual', {
                 configid: Number(state.config.id),
+                manualid: Number(state.manualEditingId || 0),
                 studentid: Number(state.manualEvalStudent),
                 submissionid: Number(state.manualSubmission),
                 selectiontype: state.manualEvalType || 'specific',
@@ -1004,16 +1439,14 @@ define(['core/ajax'], function(Ajax) {
             });
 
             state.manuals = data.manuals || [];
-            state.manualLevels = {};
-            state.manualFeedback = {};
-            state.manualObservations = '';
+            resetManualDraft();
             state.savingManual = false;
             renderManualCard();
-            showToast(data.message || 'Calificación manual guardada.');
+            showToast(data.message || 'Referencia manual guardada.');
         } catch (error) {
             state.savingManual = false;
             renderManualCard();
-            showToast(error.message || 'No se pudo guardar la calificación manual.');
+            showToast(error.message || 'No se pudo guardar la referencia manual.');
         }
     };
 
@@ -1021,11 +1454,45 @@ define(['core/ajax'], function(Ajax) {
         try {
             const data = await request('delete_manual', {manualid: Number(manualId)});
             state.manuals = data.manuals || [];
+            if (String(state.manualEditingId) === String(manualId)) {
+                resetManualDraft();
+            }
             renderManualCard();
             showToast(data.message || 'Calificación manual eliminada.');
         } catch (error) {
             showToast(error.message || 'No se pudo eliminar la calificación manual.');
         }
+    };
+
+    const editManual = async manualId => {
+        const manual = state.manuals.find(item => String(item.id) === String(manualId));
+        if (!manual) {
+            return;
+        }
+
+        state.manualEditingId = String(manual.id);
+        state.manualEvalType = manual.selectiontype || 'specific';
+        state.manualEvalStudent = String(manual.studentid);
+        state.manualSubmission = String(manual.submissionid);
+        state.manualObservations = manual.generalobservations || '';
+        state.manualLevels = {};
+        state.manualFeedback = {};
+        (manual.details || []).forEach(detail => {
+            state.manualLevels[String(detail.criterionid)] = String(detail.levelid);
+            state.manualFeedback[String(detail.criterionid)] = detail.observation || '';
+        });
+        renderManualCard();
+        await loadSelectedSubmission('manual');
+    };
+
+    const resetManualDraft = () => {
+        state.manualEditingId = '';
+        state.manualEvalType = null;
+        state.manualEvalStudent = '';
+        state.manualSubmission = '';
+        state.manualLevels = {};
+        state.manualFeedback = {};
+        state.manualObservations = '';
     };
 
     const generatePreview = async() => {
@@ -1065,7 +1532,6 @@ define(['core/ajax'], function(Ajax) {
                 state.latestAiResult = null;
             }
             renderAiTestCard();
-            renderStudentSelection();
             showToast(data.message || 'Prueba IA eliminada.');
         } catch (error) {
             showToast(error.message || 'No se pudo eliminar la prueba IA.');
@@ -1235,6 +1701,38 @@ define(['core/ajax'], function(Ajax) {
         }, 0);
     };
 
+    const aiResultTotal = result => {
+        const details = result.details || [];
+        if (details.length) {
+            return Math.round(details.reduce((sum, item) => sum + Number(item.score || 0), 0) * 100) / 100;
+        }
+        return Number(result.totalgrade || 0);
+    };
+
+    const gradePercent = (score, max) => {
+        const maximum = Number(max || 0);
+        if (maximum <= 0) {
+            return 0;
+        }
+        return numberInRange((Number(score || 0) / maximum) * 100, 0, 100);
+    };
+
+    const gradeHue = percent => {
+        const value = numberInRange(percent, 0, 100);
+        if (value < 60) {
+            return 4 + (value / 60) * 28;
+        }
+        if (value < 80) {
+            return 42 + ((value - 60) / 20) * 14;
+        }
+        return 80 + ((value - 80) / 20) * 58;
+    };
+
+    const gradeStyle = (score, max) => {
+        const hue = Math.round(gradeHue(gradePercent(score, max)));
+        return `--ag-grade-hue: ${hue};`;
+    };
+
     const totalWeight = () => state.rubricCriteria.reduce((sum, criterion) => sum + Number(criterion.weight || 0), 0);
 
     const updateTotalText = () => {
@@ -1259,32 +1757,91 @@ define(['core/ajax'], function(Ajax) {
         }
     };
 
-    const filteredStudents = () => {
-        const search = state.searchTerm.toLowerCase();
-        return state.students.filter(student => {
-            const matchesSearch = student.name.toLowerCase().includes(search) || student.username.toLowerCase().includes(search);
-            const status = studentAiStatus(student.id);
-            const matchesStatus = state.statusFilter === 'all' || status === state.statusFilter;
-            return matchesSearch && matchesStatus;
+    const filteredResults = () => {
+        const search = state.resultSearchTerm.toLowerCase();
+        return state.results.filter(result => {
+            const matchesSearch = result.studentName.toLowerCase().includes(search)
+                || result.studentUsername.toLowerCase().includes(search);
+            const matchesStatus = state.resultStatusFilter === 'all' || result.aistatus === state.resultStatusFilter;
+            const matchesPublication = state.publicationFilter === 'all'
+                || result.publicationStatus === state.publicationFilter;
+            return matchesSearch && matchesStatus && matchesPublication;
         });
     };
 
-    const toggleStudent = studentId => {
-        const id = String(studentId);
-        if (state.selectedStudents.includes(id)) {
-            state.selectedStudents = state.selectedStudents.filter(item => item !== id);
+    const findResult = resultId => state.results.find(result => String(result.id) === String(resultId));
+
+    const markResultStatus = (resultId, status) => {
+        state.results = state.results.map(result => String(result.id) === String(resultId)
+            ? Object.assign({}, result, {aistatus: status})
+            : result);
+    };
+
+    const selectedRunnableResults = () => state.results.filter(result =>
+        state.selectedResults.includes(String(result.id))
+        && result.publicationStatus !== 'published'
+        && !state.bulkRunning
+    );
+
+    const selectedPublishableResults = () => state.results.filter(result =>
+        state.selectedResults.includes(String(result.id)) && isPublishable(result)
+    );
+
+    const isPublishable = result => result
+        && result.aistatus === 'evaluated'
+        && result.aitotalgrade !== null
+        && result.publicationStatus !== 'published';
+
+    const toggleResult = resultId => {
+        const id = String(resultId);
+        if (state.selectedResults.includes(id)) {
+            state.selectedResults = state.selectedResults.filter(item => item !== id);
         } else {
-            state.selectedStudents.push(id);
+            state.selectedResults.push(id);
         }
     };
 
-    const toggleAllStudents = () => {
-        const filtered = filteredStudents();
-        if (state.selectedStudents.length === filtered.length) {
-            state.selectedStudents = [];
+    const toggleAllResults = () => {
+        const filtered = filteredResults();
+        if (state.selectedResults.length === filtered.length) {
+            state.selectedResults = [];
         } else {
-            state.selectedStudents = filtered.map(student => String(student.id));
+            state.selectedResults = filtered.map(result => String(result.id));
         }
+    };
+
+    const resultMetric = (label, value) => `
+        <div>
+            <strong>${formatNumber(value)}</strong>
+            <span>${escapeHtml(label)}</span>
+        </div>
+    `;
+
+    const resultStatusBadge = status => {
+        const labels = {
+            pending: 'Pendiente',
+            processing: 'En proceso',
+            evaluated: 'Evaluado',
+            error: 'Error',
+        };
+        return `<span class="ag-status-badge ag-status-${escapeAttr(status)}">${escapeHtml(labels[status] || status)}</span>`;
+    };
+
+    const publicationBadge = status => status === 'published'
+        ? '<span class="ag-status-badge ag-status-published">Publicado</span>'
+        : '<span class="ag-status-badge ag-status-outline">No publicado</span>';
+
+    const resultAiFeedback = result => {
+        const details = result.details || [];
+        if (!details.length) {
+            return result.errordetail || '';
+        }
+        return details.map(item => `${item.criterionName}: ${item.detail || 'Sin detalle.'}`).join('\n\n');
+    };
+
+    const resultFeedbackPreview = result => {
+        const text = result.finalfeedback || resultAiFeedback(result) || result.errordetail || 'Sin feedback disponible';
+        return text.length > 150 ? `${text.slice(0, 150)}...` : text;
     };
 
     const choiceButton = (id, value, current, title, description, action, shuffle) => `
@@ -1350,17 +1907,6 @@ define(['core/ajax'], function(Ajax) {
             </div>
         `;
     };
-
-    const statusBadge = status => {
-        if (status === 'evaluated') {
-            return '<span class="ag-status ag-status--green">Con prueba</span>';
-        }
-        return '<span class="ag-status ag-status--gray">Sin prueba</span>';
-    };
-
-    const studentAiStatus = studentId => state.aiTests.some(test => String(test.studentid) === String(studentId))
-        ? 'evaluated'
-        : 'not-evaluated';
 
     const findCriterion = criterionId => state.rubricCriteria.find(item => String(item.id) === String(criterionId));
 

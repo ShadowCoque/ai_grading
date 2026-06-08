@@ -143,6 +143,7 @@ class grading_service {
         global $DB;
 
         $config = self::require_config_for_payload($courseid, $payload);
+        $manualid = self::optional_positive_int($payload['manualid'] ?? 0);
         $studentid = self::require_int($payload, 'studentid');
         $submissionid = self::require_int($payload, 'submissionid');
         vpl_repository::validate_submission($courseid, (int)$config->vplid, $studentid, $submissionid);
@@ -157,16 +158,35 @@ class grading_service {
 
         $transaction = $DB->start_delegated_transaction();
 
-        $manual = (object)[
-            'configid' => (int)$config->id,
-            'studentid' => $studentid,
-            'submissionid' => $submissionid,
-            'selectiontype' => self::valid_selection_type((string)($payload['selectiontype'] ?? 'specific')),
-            'totalgrade' => $total,
-            'generalobservations' => (string)($payload['generalobservations'] ?? ''),
-            'timecreated' => time(),
-        ];
-        $manual->id = $DB->insert_record('local_ai_grading_manual', $manual);
+        if ($manualid > 0) {
+            $manual = $DB->get_record('local_ai_grading_manual', [
+                'id' => $manualid,
+                'configid' => (int)$config->id,
+            ], '*', MUST_EXIST);
+            $manual->studentid = $studentid;
+            $manual->submissionid = $submissionid;
+            $manual->selectiontype = self::valid_selection_type((string)($payload['selectiontype'] ?? 'specific'));
+            $manual->totalgrade = $total;
+            $manual->generalobservations = (string)($payload['generalobservations'] ?? '');
+            $manual->timecreated = time();
+            $DB->update_record('local_ai_grading_manual', $manual);
+            $DB->delete_records('local_ai_grading_mancrit', ['manualid' => $manualid]);
+        } else {
+            if ($DB->count_records('local_ai_grading_manual', ['configid' => (int)$config->id]) >= 3) {
+                throw new \moodle_exception('manualmaxreferences', 'local_ai_grading');
+            }
+
+            $manual = (object)[
+                'configid' => (int)$config->id,
+                'studentid' => $studentid,
+                'submissionid' => $submissionid,
+                'selectiontype' => self::valid_selection_type((string)($payload['selectiontype'] ?? 'specific')),
+                'totalgrade' => $total,
+                'generalobservations' => (string)($payload['generalobservations'] ?? ''),
+                'timecreated' => time(),
+            ];
+            $manual->id = $DB->insert_record('local_ai_grading_manual', $manual);
+        }
 
         foreach ($details as $detail) {
             $DB->insert_record('local_ai_grading_mancrit', (object)[
@@ -182,7 +202,7 @@ class grading_service {
         return [
             'manual' => self::get_manual((int)$manual->id),
             'manuals' => self::get_manuals((int)$config->id),
-            'message' => get_string('manualsaved', 'local_ai_grading'),
+            'message' => get_string($manualid > 0 ? 'manualupdated' : 'manualsaved', 'local_ai_grading'),
         ];
     }
 
@@ -244,9 +264,7 @@ class grading_service {
         $timereceived = time();
 
         $details = self::normalise_ai_response_details($response['criteria'] ?? [], $criteria);
-        $total = isset($response['total_grade']) && is_numeric($response['total_grade'])
-            ? (float)$response['total_grade']
-            : self::calculate_total_from_levels($criteria, $details);
+        $total = self::calculate_total_from_levels($criteria, $details);
 
         $transaction = $DB->start_delegated_transaction();
 
@@ -303,6 +321,183 @@ class grading_service {
         return [
             'aiTests' => self::get_ai_tests((int)$config->id),
             'message' => get_string('aitestdeleted', 'local_ai_grading'),
+        ];
+    }
+
+    /**
+     * Returns the second interface state with persistent student result rows.
+     *
+     * @param int $courseid Course id.
+     * @param array $payload Payload.
+     * @return array
+     */
+    public static function get_results_state(int $courseid, array $payload): array {
+        $config = self::require_config_for_payload($courseid, $payload);
+        $activity = vpl_repository::get_activity($courseid, (int)$config->vplid);
+        $criteria = self::get_criteria((int)$config->id);
+        $students = vpl_repository::get_students_with_submissions($courseid, (int)$config->vplid);
+
+        self::ensure_result_records($config, $students);
+
+        return [
+            'settings' => self::get_public_settings(),
+            'activity' => $activity,
+            'config' => self::format_config($config),
+            'criteria' => $criteria,
+            'results' => self::get_results((int)$config->id),
+            'summary' => self::result_summary((int)$config->id),
+        ];
+    }
+
+    /**
+     * Runs and saves a real AI result for one student submission.
+     *
+     * @param int $courseid Course id.
+     * @param array $payload Payload.
+     * @param int $teacherid Current teacher id.
+     * @return array
+     */
+    public static function run_result_ai(int $courseid, array $payload, int $teacherid): array {
+        global $DB;
+
+        $resultid = self::require_int($payload, 'resultid');
+        $result = $DB->get_record('local_ai_grading_result', ['id' => $resultid], '*', MUST_EXIST);
+        $config = self::get_config_by_id((int)$result->configid);
+        self::assert_config_course($config, $courseid);
+
+        $criteria = self::get_criteria((int)$config->id);
+        if (empty($criteria)) {
+            throw new \moodle_exception('nocriteria', 'local_ai_grading');
+        }
+        foreach ($criteria as $criterion) {
+            if (empty($criterion['levels'])) {
+                throw new \moodle_exception('criterionwithoutlevels', 'local_ai_grading');
+            }
+        }
+
+        $now = time();
+        $result->aistatus = 'processing';
+        $result->errordetail = null;
+        $DB->update_record('local_ai_grading_result', $result);
+
+        try {
+            $submission = vpl_repository::get_submission(
+                $courseid,
+                (int)$config->vplid,
+                (int)$result->studentid,
+                (int)$result->submissionid
+            );
+            $payloadtosend = self::build_external_payload($courseid, $config, $teacherid, $submission, $criteria);
+            $response = ai_client::run($payloadtosend, $criteria);
+            $details = self::normalise_ai_response_details($response['criteria'] ?? [], $criteria);
+            $total = self::calculate_total_from_levels($criteria, $details);
+
+            $transaction = $DB->start_delegated_transaction();
+
+            $result = $DB->get_record('local_ai_grading_result', ['id' => $resultid], '*', MUST_EXIST);
+            $result->attemptnumber = (int)$submission['attemptNo'];
+            $result->timesubmitted = (int)$submission['datesubmitted'];
+            $result->aistatus = 'evaluated';
+            $result->aitotalgrade = round($total, 2);
+            $result->errordetail = null;
+            $result->timeevaluated = $now;
+            $DB->update_record('local_ai_grading_result', $result);
+
+            self::replace_result_details((int)$result->id, $criteria, $details);
+
+            $transaction->allow_commit();
+
+            return [
+                'result' => self::get_result((int)$result->id),
+                'results' => self::get_results((int)$config->id),
+                'summary' => self::result_summary((int)$config->id),
+                'message' => get_string('externalresultnotice', 'local_ai_grading'),
+            ];
+        } catch (\moodle_exception $exception) {
+            $result = $DB->get_record('local_ai_grading_result', ['id' => $resultid], '*', MUST_EXIST);
+            $result->aistatus = 'error';
+            $result->errordetail = clean_param($exception->getMessage(), PARAM_TEXT);
+            $DB->update_record('local_ai_grading_result', $result);
+
+            return [
+                'result' => self::get_result((int)$result->id),
+                'results' => self::get_results((int)$config->id),
+                'summary' => self::result_summary((int)$config->id),
+                'message' => $exception->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Saves teacher review fields for one result.
+     *
+     * @param int $courseid Course id.
+     * @param array $payload Payload.
+     * @param int $teacherid Current teacher id.
+     * @return array
+     */
+    public static function save_result_review(int $courseid, array $payload, int $teacherid): array {
+        global $DB;
+
+        $resultid = self::require_int($payload, 'resultid');
+        $result = $DB->get_record('local_ai_grading_result', ['id' => $resultid], '*', MUST_EXIST);
+        $config = self::get_config_by_id((int)$result->configid);
+        self::assert_config_course($config, $courseid);
+
+        $result->finaltotalgrade = self::number_in_range($payload['finaltotalgrade'] ?? 0, 0, 100);
+        $result->finalfeedback = clean_param((string)($payload['finalfeedback'] ?? ''), PARAM_TEXT);
+        $result->studentfeedback = clean_param((string)($payload['studentfeedback'] ?? ''), PARAM_TEXT);
+        $result->reviewedby = $teacherid;
+        $result->timereviewed = time();
+        $DB->update_record('local_ai_grading_result', $result);
+
+        return [
+            'result' => self::get_result((int)$result->id),
+            'results' => self::get_results((int)$config->id),
+            'summary' => self::result_summary((int)$config->id),
+            'message' => get_string('resultsaved', 'local_ai_grading'),
+        ];
+    }
+
+    /**
+     * Marks one result as published.
+     *
+     * @param int $courseid Course id.
+     * @param array $payload Payload.
+     * @param int $teacherid Current teacher id.
+     * @return array
+     */
+    public static function publish_result(int $courseid, array $payload, int $teacherid): array {
+        global $DB;
+
+        $resultid = self::require_int($payload, 'resultid');
+        $result = $DB->get_record('local_ai_grading_result', ['id' => $resultid], '*', MUST_EXIST);
+        $config = self::get_config_by_id((int)$result->configid);
+        self::assert_config_course($config, $courseid);
+
+        if ($result->aistatus !== 'evaluated' || $result->aitotalgrade === null) {
+            throw new \moodle_exception('resultnotready', 'local_ai_grading');
+        }
+
+        if ($result->finaltotalgrade === null) {
+            $result->finaltotalgrade = (float)$result->aitotalgrade;
+        }
+        if ($result->finalfeedback === null || trim((string)$result->finalfeedback) === '') {
+            $result->finalfeedback = self::combined_ai_feedback((int)$result->id);
+        }
+
+        $now = time();
+        $result->reviewedby = $result->reviewedby ?: $teacherid;
+        $result->publishedby = $teacherid;
+        $result->timereviewed = $result->timereviewed ?: $now;
+        $result->timepublished = $now;
+        $DB->update_record('local_ai_grading_result', $result);
+
+        return [
+            'result' => self::get_result((int)$result->id),
+            'results' => self::get_results((int)$config->id),
+            'summary' => self::result_summary((int)$config->id),
+            'message' => get_string('resultpublished', 'local_ai_grading'),
         ];
     }
 
@@ -853,12 +1048,74 @@ class grading_service {
                     }, $criterion['levels']),
                 ];
             }, $criteria),
+            'manual_references' => self::get_manual_references_for_payload((int)$config->id),
             'submission' => [
                 'attempt_no' => (string)$submission['attemptNo'],
                 'source_code' => $submission['source_code'],
                 'execution_output' => $submission['execution_output'] ?? '',
             ],
         ];
+    }
+
+    /**
+     * Returns manual teacher grading references for the external AI payload.
+     *
+     * @param int $configid Config id.
+     * @return array
+     */
+    private static function get_manual_references_for_payload(int $configid): array {
+        global $DB;
+
+        $manuals = $DB->get_records(
+            'local_ai_grading_manual',
+            ['configid' => $configid],
+            'timecreated DESC, id DESC',
+            '*',
+            0,
+            3
+        );
+        if (empty($manuals)) {
+            return [];
+        }
+
+        $references = [];
+        foreach ($manuals as $manual) {
+            $details = [];
+            $sql = "SELECT mc.criterionid, mc.levelid, mc.observation,
+                           c.name AS criterionname, c.weight,
+                           l.name AS levelname, l.percentage
+                      FROM {local_ai_grading_mancrit} mc
+                      JOIN {local_ai_grading_criterion} c ON c.id = mc.criterionid
+                      JOIN {local_ai_grading_level} l ON l.id = mc.levelid
+                     WHERE mc.manualid = :manualid
+                  ORDER BY c.sortorder ASC, c.id ASC";
+            $records = $DB->get_records_sql($sql, ['manualid' => (int)$manual->id]);
+            foreach ($records as $record) {
+                $score = ((float)$record->weight * (float)$record->percentage) / 100;
+                $details[] = [
+                    'criterion_id' => (string)$record->criterionid,
+                    'criterion_name' => (string)$record->criterionname,
+                    'level_id' => (string)$record->levelid,
+                    'level_name' => (string)$record->levelname,
+                    'level_percentage' => (string)$record->percentage,
+                    'score' => (string)round($score, 2),
+                    'max' => (string)$record->weight,
+                    'observation' => (string)$record->observation,
+                ];
+            }
+
+            $references[] = [
+                'manual_id' => (string)$manual->id,
+                'student_id' => (string)$manual->studentid,
+                'submission_id' => (string)$manual->submissionid,
+                'selection_type' => (string)$manual->selectiontype,
+                'total_grade' => (string)round((float)$manual->totalgrade, 2),
+                'general_observations' => (string)$manual->generalobservations,
+                'criteria' => $details,
+            ];
+        }
+
+        return $references;
     }
 
     /**
@@ -876,7 +1133,9 @@ class grading_service {
                   JOIN {user} u ON u.id = m.studentid
                  WHERE m.id = :manualid";
         $record = $DB->get_record_sql($sql, ['manualid' => $manualid], MUST_EXIST);
-        return self::format_manual($record);
+        $formatted = self::format_manual($record);
+        $formatted['details'] = self::get_manual_details($manualid);
+        return $formatted;
     }
 
     /**
@@ -895,10 +1154,47 @@ class grading_service {
                  WHERE m.configid = :configid
               ORDER BY m.timecreated DESC, m.id DESC";
 
-        $records = $DB->get_records_sql($sql, ['configid' => $configid]);
+        $records = $DB->get_records_sql($sql, ['configid' => $configid], 0, 3);
         return array_map(static function(\stdClass $record): array {
-            return self::format_manual($record);
+            $formatted = self::format_manual($record);
+            $formatted['details'] = self::get_manual_details((int)$record->id);
+            return $formatted;
         }, array_values($records));
+    }
+
+    /**
+     * Returns manual criterion details.
+     *
+     * @param int $manualid Manual id.
+     * @return array
+     */
+    private static function get_manual_details(int $manualid): array {
+        global $DB;
+
+        $sql = "SELECT mc.id, mc.manualid, mc.criterionid, mc.levelid, mc.observation,
+                       c.name AS criterionname, c.weight,
+                       l.name AS levelname, l.percentage
+                  FROM {local_ai_grading_mancrit} mc
+                  JOIN {local_ai_grading_criterion} c ON c.id = mc.criterionid
+                  JOIN {local_ai_grading_level} l ON l.id = mc.levelid
+                 WHERE mc.manualid = :manualid
+              ORDER BY c.sortorder ASC, c.id ASC";
+        $records = $DB->get_records_sql($sql, ['manualid' => $manualid]);
+        $details = [];
+        foreach ($records as $record) {
+            $details[] = [
+                'id' => (int)$record->id,
+                'criterionid' => (int)$record->criterionid,
+                'criterionName' => (string)$record->criterionname,
+                'levelid' => (int)$record->levelid,
+                'levelName' => (string)$record->levelname,
+                'percentage' => (float)$record->percentage,
+                'score' => round(((float)$record->weight * (float)$record->percentage) / 100, 2),
+                'max' => (float)$record->weight,
+                'observation' => (string)$record->observation,
+            ];
+        }
+        return $details;
     }
 
     /**
@@ -1020,6 +1316,234 @@ class grading_service {
             'timereceived' => (int)$record->timereceived,
             'timereceivedText' => userdate((int)$record->timereceived),
         ];
+    }
+
+    /**
+     * Creates missing result rows for latest student submissions.
+     *
+     * @param \stdClass $config Config record.
+     * @param array $students Students with submissions.
+     * @return void
+     */
+    private static function ensure_result_records(\stdClass $config, array $students): void {
+        global $DB;
+
+        $now = time();
+        foreach ($students as $student) {
+            $submission = $student['submissions'][0] ?? null;
+            if (!$submission) {
+                continue;
+            }
+
+            $exists = $DB->record_exists('local_ai_grading_result', [
+                'configid' => (int)$config->id,
+                'submissionid' => (int)$submission['id'],
+            ]);
+            if ($exists) {
+                continue;
+            }
+
+            $DB->insert_record('local_ai_grading_result', (object)[
+                'configid' => (int)$config->id,
+                'studentid' => (int)$student['id'],
+                'submissionid' => (int)$submission['id'],
+                'attemptnumber' => (int)$submission['attemptNo'],
+                'timesubmitted' => (int)$submission['datesubmitted'],
+                'aistatus' => 'pending',
+                'timecreated' => $now,
+            ]);
+        }
+    }
+
+    /**
+     * Returns one persistent result row with criterion details.
+     *
+     * @param int $resultid Result id.
+     * @return array
+     */
+    private static function get_result(int $resultid): array {
+        global $DB;
+
+        $sql = "SELECT r.*, u.firstname, u.lastname, u.firstnamephonetic, u.lastnamephonetic,
+                       u.middlename, u.alternatename, u.username
+                  FROM {local_ai_grading_result} r
+                  JOIN {user} u ON u.id = r.studentid
+                 WHERE r.id = :resultid";
+        $record = $DB->get_record_sql($sql, ['resultid' => $resultid], MUST_EXIST);
+        $formatted = self::format_result($record);
+        $formatted['details'] = self::get_result_details($resultid);
+        return $formatted;
+    }
+
+    /**
+     * Returns persistent result rows for one config.
+     *
+     * @param int $configid Config id.
+     * @return array
+     */
+    private static function get_results(int $configid): array {
+        global $DB;
+
+        $sql = "SELECT r.*, u.firstname, u.lastname, u.firstnamephonetic, u.lastnamephonetic,
+                       u.middlename, u.alternatename, u.username
+                  FROM {local_ai_grading_result} r
+                  JOIN {user} u ON u.id = r.studentid
+                 WHERE r.configid = :configid
+              ORDER BY u.lastname, u.firstname, u.id";
+        $records = $DB->get_records_sql($sql, ['configid' => $configid]);
+        return array_map(static function(\stdClass $record): array {
+            $formatted = self::format_result($record);
+            $formatted['details'] = self::get_result_details((int)$record->id);
+            return $formatted;
+        }, array_values($records));
+    }
+
+    /**
+     * Formats a persistent result row.
+     *
+     * @param \stdClass $record Result row.
+     * @return array
+     */
+    private static function format_result(\stdClass $record): array {
+        $published = !empty($record->timepublished);
+        $reviewed = !empty($record->timereviewed);
+
+        return [
+            'id' => (int)$record->id,
+            'configid' => (int)$record->configid,
+            'studentid' => (int)$record->studentid,
+            'studentName' => fullname($record),
+            'studentUsername' => (string)$record->username,
+            'submissionid' => (int)$record->submissionid,
+            'attemptnumber' => (int)$record->attemptnumber,
+            'timesubmitted' => (int)$record->timesubmitted,
+            'timesubmittedText' => userdate((int)$record->timesubmitted),
+            'aistatus' => (string)$record->aistatus,
+            'aitotalgrade' => $record->aitotalgrade === null ? null : round((float)$record->aitotalgrade, 2),
+            'finaltotalgrade' => $record->finaltotalgrade === null ? null : round((float)$record->finaltotalgrade, 2),
+            'finalfeedback' => (string)$record->finalfeedback,
+            'studentfeedback' => (string)$record->studentfeedback,
+            'errordetail' => (string)$record->errordetail,
+            'reviewStatus' => $reviewed ? 'approved' : 'pending_review',
+            'publicationStatus' => $published ? 'published' : 'not_published',
+            'timeevaluated' => empty($record->timeevaluated) ? null : (int)$record->timeevaluated,
+            'timeevaluatedText' => empty($record->timeevaluated) ? '' : userdate((int)$record->timeevaluated),
+            'timereviewed' => empty($record->timereviewed) ? null : (int)$record->timereviewed,
+            'timepublished' => empty($record->timepublished) ? null : (int)$record->timepublished,
+        ];
+    }
+
+    /**
+     * Returns result criterion details.
+     *
+     * @param int $resultid Result id.
+     * @return array
+     */
+    private static function get_result_details(int $resultid): array {
+        global $DB;
+
+        $sql = "SELECT d.id, d.resultid, d.criterionid, d.levelid, d.aigrade, d.finalgrade,
+                       d.aidetail, d.finaldetail, c.name AS criterionname, c.weight,
+                       l.name AS levelname, l.percentage
+                  FROM {local_ai_grading_rescrit} d
+                  JOIN {local_ai_grading_criterion} c ON c.id = d.criterionid
+             LEFT JOIN {local_ai_grading_level} l ON l.id = d.levelid
+                 WHERE d.resultid = :resultid
+              ORDER BY c.sortorder ASC, c.id ASC";
+        $records = $DB->get_records_sql($sql, ['resultid' => $resultid]);
+        $details = [];
+        foreach ($records as $record) {
+            $details[] = [
+                'id' => (int)$record->id,
+                'criterionid' => (int)$record->criterionid,
+                'criterionName' => (string)$record->criterionname,
+                'levelid' => empty($record->levelid) ? null : (int)$record->levelid,
+                'levelName' => (string)$record->levelname,
+                'percentage' => $record->percentage === null ? null : (float)$record->percentage,
+                'score' => $record->aigrade === null ? null : round((float)$record->aigrade, 2),
+                'finalscore' => $record->finalgrade === null ? null : round((float)$record->finalgrade, 2),
+                'max' => (float)$record->weight,
+                'detail' => (string)$record->aidetail,
+                'finaldetail' => (string)$record->finaldetail,
+            ];
+        }
+        return $details;
+    }
+
+    /**
+     * Replaces AI details for one persistent result.
+     *
+     * @param int $resultid Result id.
+     * @param array $criteria Current criteria.
+     * @param array $details Normalized AI details.
+     * @return void
+     */
+    private static function replace_result_details(int $resultid, array $criteria, array $details): void {
+        global $DB;
+
+        $DB->delete_records('local_ai_grading_rescrit', ['resultid' => $resultid]);
+        $map = self::criteria_level_map($criteria);
+
+        foreach ($details as $detail) {
+            $criterionid = (int)$detail['criterionid'];
+            $levelid = (int)$detail['levelid'];
+            $criterion = $map[$criterionid]['criterion'];
+            $level = $map[$criterionid]['levels'][$levelid];
+            $score = ((float)$criterion['weight'] * (float)$level['percentage']) / 100;
+
+            $DB->insert_record('local_ai_grading_rescrit', (object)[
+                'resultid' => $resultid,
+                'criterionid' => $criterionid,
+                'levelid' => $levelid,
+                'aigrade' => round($score, 2),
+                'aidetail' => (string)$detail['detail'],
+            ]);
+        }
+    }
+
+    /**
+     * Builds a compact summary for the result management view.
+     *
+     * @param int $configid Config id.
+     * @return array
+     */
+    private static function result_summary(int $configid): array {
+        $results = self::get_results($configid);
+        $summary = [
+            'total' => count($results),
+            'pending' => 0,
+            'processing' => 0,
+            'evaluated' => 0,
+            'error' => 0,
+            'published' => 0,
+        ];
+
+        foreach ($results as $result) {
+            $status = $result['aistatus'];
+            if (isset($summary[$status])) {
+                $summary[$status]++;
+            }
+            if ($result['publicationStatus'] === 'published') {
+                $summary['published']++;
+            }
+        }
+
+        return $summary;
+    }
+
+    /**
+     * Creates final feedback from AI criterion details.
+     *
+     * @param int $resultid Result id.
+     * @return string
+     */
+    private static function combined_ai_feedback(int $resultid): string {
+        $details = self::get_result_details($resultid);
+        $parts = [];
+        foreach ($details as $detail) {
+            $parts[] = $detail['criterionName'] . ': ' . $detail['detail'];
+        }
+        return implode("\n\n", $parts);
     }
 
     /**
