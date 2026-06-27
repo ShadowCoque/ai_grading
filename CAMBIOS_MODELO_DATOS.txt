@@ -1,0 +1,270 @@
+===============================================================================
+ CAMBIOS EN LA ESTRUCTURA DE DATOS — plugin local_ai_grading
+ De tu modelo conceptual inicial al esquema implementado (db/install.xml)
+ Actualizado: 2026-06-08
+===============================================================================
+
+Este documento explica, en cristiano, qué pasó entre el modelo de datos que
+diseñaste al inicio y el que terminó implementado en Moodle. No es solo un
+"cambié X por Y": incluye POR QUÉ se quitó o renombró cada cosa y un CASO DE USO
+para que se entienda en la práctica.
+
+
+-------------------------------------------------------------------------------
+0) DOS CONVENCIONES QUE EXPLICAN CASI TODOS LOS "CAMBIOS DE NOMBRE"
+-------------------------------------------------------------------------------
+
+(a) Idioma y estilo Moodle.
+    Tus nombres iban en español (curso_id, fecha_creacion, nombre_nivel...).
+    Moodle obliga/recomienda inglés y nombres estándar:
+        curso_id            -> courseid
+        actividad_vpl_id    -> vplid
+        docente_id          -> teacherid
+        estudiante_id       -> studentid
+        entrega_id          -> submissionid
+        fecha_creacion      -> timecreated
+        orden               -> sortorder
+        nombre_nivel        -> name
+    No es un cambio de diseño, es solo adaptación al estándar.
+
+(b) Nombres de tabla cortos (límite de Moodle/Oracle).
+    Una tabla en Moodle es: prefijo_instalacion + nombre_xmldb, y el total tiene
+    que caber en ~30 caracteres. El componente ya gasta "local_ai_grading_"
+    (17 chars), así que el sufijo debe ser muy corto. Por eso:
+        configuracion_evaluacion         -> local_ai_grading_config
+        criterio_evaluacion              -> local_ai_grading_criterion
+        nivel_criterio                   -> local_ai_grading_level
+        calificacion_manual              -> local_ai_grading_manual
+        calificacion_manual_criterio     -> local_ai_grading_mancrit
+        prueba_evaluacion_ia             -> local_ai_grading_aitest
+        prueba_evaluacion_ia_criterio    -> local_ai_grading_aitcrit
+        resultado_evaluacion             -> local_ai_grading_result
+        resultado_evaluacion_criterio    -> local_ai_grading_rescrit
+    "mancrit", "aitcrit", "rescrit" son abreviaturas forzadas, no rediseño.
+
+
+-------------------------------------------------------------------------------
+1) configuracion_evaluacion  ->  local_ai_grading_config
+-------------------------------------------------------------------------------
+
+SE QUITÓ (lo que tenías comentado, y se confirmó NO implementar):
+  - version  +  índice (actividad_vpl_id, version)
+        Por qué: se decidió "UNA configuración por curso + actividad VPL".
+        No hay v1, v2, v3 de la misma rúbrica.
+        Caso de uso: el profe cambia los pesos de los criterios -> se ACTUALIZA
+        la misma configuración; no se crea una versión nueva ni se guarda la
+        anterior. (Regla del proyecto: nada de versionado salvo que se pida.)
+  - activa (boolean)
+        Por qué: como solo existe una config por curso+actividad, no hace falta
+        marcar cuál está "activa".
+  - fecha_actualizacion
+        Por qué: no se lleva auditoría de cuándo se editó. Simplicidad.
+
+CAMBIO MENOR:
+  - prompt: en tu modelo era NOT NULL; quedó como NULL permitido (puede guardarse
+    la config sin prompt todavía).
+
+SE MANTUVO: courseid, vplid, teacherid, prompt, timecreated, y el índice único
+(courseid, vplid). Se añadió un índice simple por teacherid (solo para búsquedas).
+
+
+-------------------------------------------------------------------------------
+2) criterio_evaluacion  ->  local_ai_grading_criterion
+3) nivel_criterio        ->  local_ai_grading_level
+-------------------------------------------------------------------------------
+
+Prácticamente idénticas a tu diseño (id, configid/criterionid, name,
+description, weight/percentage, sortorder, timecreated).
+
+ÚNICO CAMBIO DE FONDO — el índice (config, orden) y (criterio, orden) pasó de
+ÚNICO a NO ÚNICO.
+    Por qué: al guardar/reordenar criterios o niveles, por un instante pueden
+    coexistir dos filas con el mismo "orden" mientras se reasignan. Un índice
+    único reventaría a mitad de la operación. Se deja índice no único (solo para
+    ordenar/consultar rápido).
+    Caso de uso: el profe arrastra "Comentarios" de la posición 2 a la 1; durante
+    el guardado, los sortorder se recalculan sin que la BD lance error de
+    duplicado.
+
+
+-------------------------------------------------------------------------------
+4) calificacion_manual  ->  local_ai_grading_manual
+-------------------------------------------------------------------------------
+
+SE QUITÓ:
+  - estado (activa | historial | descartada)   [tú ya lo marcaste "eliminado"]
+        Por qué: no hay ciclo de vida ni historial de referencias manuales.
+        Regla del proyecto: "si algo no se conserva, se elimina en vez de manejar
+        historial complejo".
+        Caso de uso: el profe ya no quiere una de sus 3 referencias -> se BORRA
+        de verdad (DELETE). No queda como 'descartada'.
+  - fecha_confirmacion
+        Por qué: no existe un paso separado de "confirmar"; al guardar ya queda.
+
+SE MANTUVO: configid, studentid, submissionid, selectiontype (specific|random),
+totalgrade, generalobservations, timecreated.
+
+REGLA VIVA: máximo 3 referencias manuales por configuración (se valida en código,
+no en el esquema).
+
+
+-------------------------------------------------------------------------------
+5) calificacion_manual_criterio  ->  local_ai_grading_mancrit
+-------------------------------------------------------------------------------
+
+SE QUITÓ:
+  - calificacion_manual (la nota numérica por criterio)  [tú ya lo comentaste]
+        Por qué: NO se almacena; se DERIVA en el momento con la fórmula
+            nota_criterio = peso_criterio * porcentaje_nivel / 100
+        Caso de uso: criterio "Comentarios" peso 50, nivel "Aceptable" 50%
+        -> 25 puntos, calculado al vuelo. Si mañana cambias el peso, el cálculo
+        se actualiza solo; no hay un número viejo guardado que se quede obsoleto.
+
+CAMBIO: nivel_id pasó a OBLIGATORIO (en tu modelo era opcional).
+        Por qué: una referencia manual SIEMPRE elige un nivel por cada criterio
+        (es la forma de calibrar). El código exige nivel para todos los criterios.
+
+SE MANTUVO el índice único (manual, criterio): un criterio no se repite dentro de
+la misma referencia.
+
+
+-------------------------------------------------------------------------------
+6) prueba_evaluacion_ia  ->  local_ai_grading_aitest
+-------------------------------------------------------------------------------
+
+SE QUITÓ:
+  - calificacion_manual_id (enlace a UNA referencia manual)  [comentado por ti]
+        Por qué: la prueba de IA NO se ata a una sola referencia. Se envían TODAS
+        las referencias manuales (0 a 3) a n8n/OpenAI como contexto de calibración.
+        Caso de uso: tienes 3 calificaciones manuales; al "Probar IA" se mandan
+        las 3 para que el modelo entienda cómo calificas tú. No se elige una.
+  - aceptada (boolean)
+        Por qué: no hay flag de "aceptada". Guardar la prueba ya implica que la
+        corrida fue exitosa (las fallidas no se guardan).
+  - estado (activa | historial | descartada)  y  fecha_decision
+        Por qué: sin máquina de estados ni historial para pruebas.
+
+SE MANTUVO: configid, studentid, submissionid, totalgrade (nota_total_ia),
+generalfeedback (retroalimentacion_general), timesent, timereceived.
+
+
+-------------------------------------------------------------------------------
+7) prueba_evaluacion_ia_criterio  ->  local_ai_grading_aitcrit
+-------------------------------------------------------------------------------
+
+SE QUITÓ:
+  - calificacion_ia (nota por criterio)  [comentado por ti]
+        Por qué: igual que en las manuales, la nota por criterio se DERIVA del
+        nivel y el peso; no se guarda.
+
+SE MANTUVO: aitestid, criterionid, levelid, aidetail (detalle_ia) y el índice
+único (prueba, criterio).
+
+
+-------------------------------------------------------------------------------
+8) resultado_evaluacion  ->  local_ai_grading_result   (LA MÁS IMPORTANTE)
+-------------------------------------------------------------------------------
+
+SE QUITÓ:
+  - prueba_ia_referencia_id (enlace a una prueba de IA)  [comentado por ti]
+        Por qué: el resultado real (interfaz 2) NO depende de una prueba de
+        calibración (interfaz 1). Son dos mundos separados:
+          * Pruebas IA = calibrar/afinar la evaluación.
+          * Resultados = evaluación real, nota final y publicación al estudiante.
+        Caso de uso: que borres todas tus pruebas de calibración no afecta los
+        resultados reales ya evaluados.
+
+SE MANTUVO TODO TU NÚCLEO DE FLUJO (que estaba muy bien pensado):
+  estado_ia (aistatus): pending | processing | evaluated | error
+  nota_total_ia (aitotalgrade)  vs  nota_total_final (finaltotalgrade)
+  retroalimentacion_final (finalfeedback)
+  detalle_error (errordetail)
+  revisado_por / publicado_por  (reviewedby / publishedby)
+  fecha_creacion / fecha_evaluacion / fecha_revision / fecha_publicacion
+  índice único (configid, submissionid)
+
+OJO — NOMBRE ENGAÑOSO QUE CONVIENE QUE SEPAS:
+  retroalimentacion_estudiante -> studentfeedback
+        A pesar del nombre, en la práctica este campo se usa como COMENTARIO
+        INTERNO DEL DOCENTE (NO se le muestra al estudiante). El feedback que ve
+        el estudiante es 'finalfeedback'. El nombre quedó así por herencia; el
+        comportamiento es correcto. (Pendiente de limpieza si algún día quieres.)
+
+CAMPO NUEVO (añadido el 2026-06-08, NO estaba en tu modelo inicial):
+  + timestudentviewed
+        Para qué: marcar si el ESTUDIANTE ya leyó la retroalimentación publicada
+        (la notificación roja del asistente flotante).
+            NULL  = no leído  -> tarjeta en rojo suave + cuenta en el badge
+            valor = leído     -> tarjeta normal, sin color
+        Se marca al abrir "Ver retroalimentación completa" (feedback.php).
+        Se RESETEA a NULL en cada publicación: si reevalúas y republicas, vuelve
+        a salir como "no leído" para que el estudiante lea la versión nueva.
+        Caso de uso: publicas -> al estudiante le aparece rojo; entra y abre el
+        detalle -> se apaga el rojo; corriges la nota y republicas -> rojo otra vez.
+
+
+-------------------------------------------------------------------------------
+9) resultado_evaluacion_criterio  ->  local_ai_grading_rescrit
+-------------------------------------------------------------------------------
+
+Igual que tu diseño: resultid, criterionid, levelid (aquí SÍ es opcional, porque
+un criterio puede no tener nivel aún si está pendiente/error), y los cuatro
+campos clave que separan IA de docente:
+        calificacion_ia    (aigrade)     |   calificacion_final (finalgrade)
+        detalle_ia         (aidetail)    |   detalle_final      (finaldetail)
+
+DIFERENCIA DE CRITERIO vs las tablas manual/aitest:
+  Aquí la nota por criterio de la IA (aigrade) SÍ se guarda (no solo se deriva).
+  Por qué: el resultado es el registro permanente que ve el estudiante; se
+  "congela" el valor calculado al momento de evaluar, para que no cambie si más
+  tarde tocas los pesos de la rúbrica.
+
+CAMPOS RESERVADOS PERO HOY SIN USO:
+  finalgrade y finaldetail (la versión "del profesor" por criterio) existen pero
+  todavía NO se llenan. Decisión del 2026-06-08: el profesor solo ajusta a nivel
+  general (nota final total + retroalimentación general), NO criterio por
+  criterio. Si algún día quieres "segmentación completa por criterio", la
+  estructura ya está lista para soportarlo sin cambiar el esquema.
+
+
+-------------------------------------------------------------------------------
+10) EL CAMBIO MÁS IMPORTANTE NO ES DE ESQUEMA, ES DE SIGNIFICADO
+-------------------------------------------------------------------------------
+
+Campos: revisado_por / fecha_revision (reviewedby / timereviewed).
+
+Estaban en tu modelo desde el inicio, PERO su significado cambió el 2026-06-08:
+
+  ANTES: publicar rellenaba automáticamente la revisión. Resultado: TODO lo
+         publicado parecía "revisado por el docente", aunque el profe nunca lo
+         hubiera abierto. No se podía distinguir.
+
+  AHORA: "revisado" es un estado EXPLÍCITO. Solo se marca cuando el docente abre
+         el resultado y guarda su revisión. Publicar por sí solo NO marca revisión.
+
+  Esto permite las dos etiquetas que ve el estudiante:
+     - "Calificado por IA"        (publicado sin revisión del docente)
+     - "Revisado por el profesor" (el docente revisó/ajustó antes de publicar)
+
+  Caso de uso A: el profe confía en la IA y publica directo -> el estudiante ve
+                 "Calificado por IA".
+  Caso de uso B: el profe abre, ajusta la nota o el feedback, guarda y publica ->
+                 el estudiante ve "Revisado por el profesor".
+
+  Nota sobre datos viejos: los resultados publicados ANTES de este cambio quedaron
+  con fecha_revision puesta por el comportamiento anterior, así que aparecerán
+  como "revisados" aunque no lo fueran. Conviene re-publicar o limpiar datos de
+  prueba para ver bien la distinción nueva.
+
+
+-------------------------------------------------------------------------------
+RESUMEN EN UNA FRASE
+-------------------------------------------------------------------------------
+Tu modelo se respetó casi entero. Lo que se quitó fue, en su mayoría, lo que ya
+tenías comentado: versionado, flags de "activa/aceptada", máquinas de estado y
+enlaces opcionales entre tablas — todo en nombre de la simplicidad ("si no se
+conserva, se elimina"). Las notas por criterio se derivan en vez de guardarse
+(salvo en resultados, que se congelan). Lo único realmente NUEVO es el campo
+timestudentviewed (leído/no leído) y, sobre todo, el cambio de significado de
+"revisado": ahora distingue de verdad entre "Solo IA" y "Revisado por el profesor".
+===============================================================================

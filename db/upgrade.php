@@ -51,5 +51,36 @@ function xmldb_local_ai_grading_upgrade($oldversion): bool {
         upgrade_plugin_savepoint(true, 2026051300, 'local', 'ai_grading');
     }
 
+    if ($oldversion < 2026060900) {
+        // Track when a student first opened their published feedback, so the
+        // floating assistant can show read/unread state.
+        $table = new xmldb_table('local_ai_grading_result');
+        $field = new xmldb_field('timestudentviewed', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'timepublished');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        upgrade_plugin_savepoint(true, 2026060900, 'local', 'ai_grading');
+    }
+
+    if ($oldversion < 2026060901) {
+        // rubricfingerprint: detecta cambios críticos de configuración (criterios,
+        // niveles, calificaciones manuales) para reiniciar las evaluaciones previas.
+        $table = new xmldb_table('local_ai_grading_config');
+        $field = new xmldb_field('rubricfingerprint', XMLDB_TYPE_CHAR, '40', null, null, null, null, 'prompt');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        // finallevelid: nivel final elegido por el docente, distinto del sugerido por la IA.
+        $table = new xmldb_table('local_ai_grading_rescrit');
+        $field = new xmldb_field('finallevelid', XMLDB_TYPE_INTEGER, '10', null, null, null, null, 'levelid');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        upgrade_plugin_savepoint(true, 2026060901, 'local', 'ai_grading');
+    }
+
     return true;
 }

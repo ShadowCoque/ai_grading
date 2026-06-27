@@ -17,7 +17,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_ai_grading';
-$plugin->release = '0.3.0';
-$plugin->version = 2026060800;
+$plugin->release = '0.4.0';
+$plugin->version = 2026060901;
 $plugin->requires = 2025041400;
 $plugin->maturity = MATURITY_ALPHA;

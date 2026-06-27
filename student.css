@@ -239,6 +239,55 @@
     font-weight: 600;
 }
 
+/* Unread feedback card: soft red until the student opens the full feedback. */
+.aig-assistant-card--unread {
+    background: #fef2f2;
+    border-color: #f5c2c2;
+}
+
+.aig-assistant-card--unread:hover {
+    border-color: #ef4444;
+    box-shadow: 0 6px 16px rgba(239, 68, 68, 0.12);
+}
+
+.aig-assistant-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 2px;
+    background: #ef4444;
+    border-radius: 50%;
+    vertical-align: middle;
+}
+
+/* Origin tags (AI vs teacher-reviewed), shared by assistant + feedback page. */
+.aig-assistant-origin,
+.aig-origin-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.aig-assistant-origin {
+    margin-top: 10px;
+    margin-right: 8px;
+}
+
+.aig-origin--teacher {
+    color: #1e7e46;
+    background: #e8f6ee;
+    border-color: #b7e4c7;
+}
+
+.aig-origin--ai {
+    color: #3730a3;
+    background: #e0e7ff;
+    border-color: #c7d2fe;
+}
+
 /* ============================================================
    Feedback page (third interface)
    ============================================================ */
@@ -339,6 +388,28 @@
 
 .aig-summary-meta span {
     color: var(--aig-muted);
+}
+
+.aig-origin-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Keep the badge's origin colour over the muted summary-meta span colour. */
+.aig-summary-meta .aig-origin--teacher {
+    color: #1e7e46;
+}
+
+.aig-summary-meta .aig-origin--ai {
+    color: #3730a3;
+}
+
+.aig-origin-help {
+    margin: 14px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 /* Rubric table */
@@ -474,4 +545,148 @@
         width: 100vw;
         max-width: 100vw;
     }
+}
+
+/* ====================================================================== */
+/* Etiquetas de fase del estudiante (Calificado por IA / Revisado /        */
+/* Modificado por docente) y vista completa dentro del asistente.          */
+/* ====================================================================== */
+.aig-phase-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    grid-column: 1 / -1;
+    margin-top: 2px;
+}
+
+.aig-phase-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.5;
+    border: 1px solid var(--aig-border);
+    background: #f3f4f6;
+    color: var(--aig-muted);
+}
+
+/* Fase alcanzada: color propio. Fase no alcanzada: atenuada. */
+.aig-phase-tag.is-off {
+    opacity: 0.45;
+}
+
+.aig-phase-tag--ai.is-on {
+    background: #dbeafe;
+    border-color: #bfdbfe;
+    color: #1d4ed8;
+}
+
+.aig-phase-tag--reviewed.is-on {
+    background: #ccfbf1;
+    border-color: #99f6e4;
+    color: #0f766e;
+}
+
+.aig-phase-tag--modified.is-on {
+    background: #fef3c7;
+    border-color: #fde68a;
+    color: #92400e;
+}
+
+/* Vista de detalle completa (en la página de edición de la actividad VPL). */
+.aig-assistant-detail {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    background: var(--aig-white);
+    border: 1px solid var(--aig-border);
+    border-radius: 10px;
+}
+
+.aig-detail-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.aig-detail-title {
+    margin: 0;
+    font-size: 16px;
+}
+
+.aig-detail-meta {
+    color: var(--aig-muted);
+    font-size: 12px;
+    margin-top: -6px;
+}
+
+.aig-detail-feedback {
+    padding: 10px 12px;
+    background: #f9fafb;
+    border: 1px solid var(--aig-border);
+    border-radius: 8px;
+    font-size: 13px;
+    white-space: pre-line;
+}
+
+.aig-detail-subtitle {
+    margin: 4px 0 0;
+    font-size: 13px;
+}
+
+.aig-detail-criteria {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.aig-detail-criterion {
+    display: grid;
+    gap: 4px;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid var(--aig-border);
+    background: #f9fafb;
+}
+
+.aig-detail-criterion-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+}
+
+.aig-detail-level {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--aig-muted);
+}
+
+.aig-detail-criterion-text {
+    margin: 0;
+    font-size: 12px;
+    color: var(--aig-text);
+    white-space: pre-line;
+}
+
+.aig-assistant-others-label {
+    margin: 14px 0 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--aig-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.aig-assistant-card--compact {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
 }

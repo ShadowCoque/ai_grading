@@ -86,6 +86,8 @@ class grading_service {
 
         $now = time();
         $config = self::get_config_record($courseid, $vplid);
+        // Huella anterior de la rúbrica (vacía para una configuración nueva).
+        $oldfingerprint = ($config && isset($config->rubricfingerprint)) ? (string)$config->rubricfingerprint : '';
         if (!$config) {
             $config = (object)[
                 'courseid' => $courseid,
@@ -103,6 +105,18 @@ class grading_service {
 
         self::sync_criteria((int)$config->id, $criteria, $now);
 
+        // Si la rúbrica (criterios, niveles o calificaciones manuales) cambió respecto
+        // a la última configuración, las evaluaciones IA previas dejan de ser válidas:
+        // se reinician a "pendiente" y se despublican, obligando a re-evaluar.
+        $newfingerprint = self::rubric_fingerprint((int)$config->id);
+        $resultsreset = 0;
+        $rubricchanged = false;
+        if ($oldfingerprint !== '' && $oldfingerprint !== $newfingerprint) {
+            $rubricchanged = true;
+            $resultsreset = self::reset_results_for_config((int)$config->id);
+        }
+        $DB->set_field('local_ai_grading_config', 'rubricfingerprint', $newfingerprint, ['id' => (int)$config->id]);
+
         $transaction->allow_commit();
 
         $savedcriteria = self::get_criteria((int)$config->id);
@@ -113,8 +127,86 @@ class grading_service {
             'weightTotal' => self::total_weight($savedcriteria),
             'manuals' => self::get_manuals((int)$config->id),
             'aiTests' => self::get_ai_tests((int)$config->id),
+            'rubricChanged' => $rubricchanged,
+            'resultsReset' => $resultsreset,
             'message' => self::weight_message($savedcriteria),
         ];
+    }
+
+    /**
+     * Computes a deterministic fingerprint of the elements that, if changed,
+     * invalidate previous AI evaluations: criteria, levels and manual references.
+     *
+     * @param int $configid Config id.
+     * @return string
+     */
+    private static function rubric_fingerprint(int $configid): string {
+        global $DB;
+
+        $parts = ['c' => [], 'm' => []];
+        foreach (self::get_criteria($configid) as $criterion) {
+            $levels = [];
+            foreach ($criterion['levels'] as $level) {
+                $levels[] = [(int)$level['id'], (string)$level['name'], (float)$level['percentage']];
+            }
+            $parts['c'][] = [(int)$criterion['id'], (string)$criterion['name'], (float)$criterion['weight'], $levels];
+        }
+
+        $manuals = $DB->get_records('local_ai_grading_manual', ['configid' => $configid], 'id ASC');
+        foreach ($manuals as $manual) {
+            $rows = $DB->get_records(
+                'local_ai_grading_mancrit',
+                ['manualid' => $manual->id],
+                'criterionid ASC',
+                'id, criterionid, levelid'
+            );
+            $mc = [];
+            foreach ($rows as $row) {
+                $mc[] = [(int)$row->criterionid, (int)$row->levelid];
+            }
+            $parts['m'][] = [(int)$manual->studentid, (int)$manual->submissionid, $mc];
+        }
+
+        return sha1(json_encode($parts));
+    }
+
+    /**
+     * Resets every non-pending result of a config back to "pending" and clears any
+     * AI evaluation, teacher review and publication. Used when the rubric changes.
+     *
+     * @param int $configid Config id.
+     * @return int Number of results that had an evaluation and were reset.
+     */
+    private static function reset_results_for_config(int $configid): int {
+        global $DB;
+
+        $results = $DB->get_records('local_ai_grading_result', ['configid' => $configid]);
+        $reset = 0;
+        foreach ($results as $result) {
+            $hadevaluation = $result->aistatus !== 'pending'
+                || $result->aitotalgrade !== null
+                || !empty($result->timepublished);
+            if (!$hadevaluation) {
+                continue;
+            }
+
+            $DB->delete_records('local_ai_grading_rescrit', ['resultid' => $result->id]);
+            $result->aistatus = 'pending';
+            $result->aitotalgrade = null;
+            $result->finaltotalgrade = null;
+            $result->finalfeedback = null;
+            $result->studentfeedback = null;
+            $result->errordetail = null;
+            $result->reviewedby = null;
+            $result->publishedby = null;
+            $result->timeevaluated = null;
+            $result->timereviewed = null;
+            $result->timepublished = null;
+            $result->timestudentviewed = null;
+            $DB->update_record('local_ai_grading_result', $result);
+            $reset++;
+        }
+        return $reset;
     }
 
     /**
@@ -399,8 +491,19 @@ class grading_service {
             $result->timesubmitted = (int)$submission['datesubmitted'];
             $result->aistatus = 'evaluated';
             $result->aitotalgrade = round($total, 2);
+            // La nota final parte de la propuesta IA; el docente la ajusta por criterio.
+            $result->finaltotalgrade = round($total, 2);
             $result->errordetail = null;
             $result->timeevaluated = $now;
+            // Una evaluación IA nueva reemplaza cualquier revisión/publicación previa:
+            // queda lista para que el docente la revise y vuelva a publicar.
+            $result->finalfeedback = null;
+            $result->studentfeedback = null;
+            $result->reviewedby = null;
+            $result->publishedby = null;
+            $result->timereviewed = null;
+            $result->timepublished = null;
+            $result->timestudentviewed = null;
             $DB->update_record('local_ai_grading_result', $result);
 
             self::replace_result_details((int)$result->id, $criteria, $details);
@@ -444,12 +547,71 @@ class grading_service {
         $config = self::get_config_by_id((int)$result->configid);
         self::assert_config_course($config, $courseid);
 
-        $result->finaltotalgrade = self::number_in_range($payload['finaltotalgrade'] ?? 0, 0, 100);
+        $criteria = self::get_criteria((int)$config->id);
+        $map = self::criteria_level_map($criteria);
+
+        // 1) Validar y calcular ANTES de abrir la transacción. La nota final NO se edita
+        // directamente: siempre se deriva de los niveles elegidos por criterio, como suma
+        // de (peso × porcentaje del nivel ÷ 100).
+        $reviewcriteria = is_array($payload['criteria'] ?? null) ? $payload['criteria'] : [];
+        $updates = [];
+        $total = null;
+        if (!empty($reviewcriteria)) {
+            $total = 0.0;
+            foreach ($reviewcriteria as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $criterionid = (int)($item['criterionid'] ?? 0);
+                $levelid = (int)($item['levelid'] ?? 0);
+                if (!isset($map[$criterionid]['levels'][$levelid])) {
+                    throw new \moodle_exception('externalinvalidlevel', 'local_ai_grading');
+                }
+                $criterion = $map[$criterionid]['criterion'];
+                $level = $map[$criterionid]['levels'][$levelid];
+                $score = round(((float)$criterion['weight'] * (float)$level['percentage']) / 100, 2);
+                $total += $score;
+                $updates[] = [
+                    'criterionid' => $criterionid,
+                    'levelid' => $levelid,
+                    'score' => $score,
+                    'finaldetail' => clean_param((string)($item['finaldetail'] ?? ''), PARAM_TEXT),
+                ];
+            }
+        }
+
+        if ($total === null) {
+            // Sin detalle por criterio: conserva la nota final derivada de los niveles ya guardados.
+            $total = (float)$DB->get_field_sql(
+                'SELECT COALESCE(SUM(finalgrade), 0) FROM {local_ai_grading_rescrit} WHERE resultid = :rid',
+                ['rid' => (int)$result->id]
+            );
+        }
+
+        // 2) Persistir dentro de la transacción.
+        $transaction = $DB->start_delegated_transaction();
+
+        foreach ($updates as $update) {
+            $row = $DB->get_record('local_ai_grading_rescrit', [
+                'resultid' => (int)$result->id,
+                'criterionid' => (int)$update['criterionid'],
+            ]);
+            if ($row) {
+                $row->finallevelid = (int)$update['levelid'];
+                $row->finalgrade = (float)$update['score'];
+                $row->finaldetail = (string)$update['finaldetail'];
+                $DB->update_record('local_ai_grading_rescrit', $row);
+            }
+        }
+
+        $result->finaltotalgrade = round((float)$total, 2);
         $result->finalfeedback = clean_param((string)($payload['finalfeedback'] ?? ''), PARAM_TEXT);
         $result->studentfeedback = clean_param((string)($payload['studentfeedback'] ?? ''), PARAM_TEXT);
         $result->reviewedby = $teacherid;
         $result->timereviewed = time();
         $DB->update_record('local_ai_grading_result', $result);
+
+        $transaction->allow_commit();
 
         return [
             'result' => self::get_result((int)$result->id),
@@ -486,11 +648,16 @@ class grading_service {
             $result->finalfeedback = self::combined_ai_feedback((int)$result->id);
         }
 
+        // Publishing on its own does NOT imply the teacher reviewed the AI output.
+        // The "reviewed" state is set exclusively by save_result_review(): if the
+        // teacher never opened and saved the result, it stays AI-only and the
+        // student view reflects that. Here we only record the publication.
+        // Each publish resets the student read flag so updated feedback shows as
+        // unread again in the floating assistant until the student opens it.
         $now = time();
-        $result->reviewedby = $result->reviewedby ?: $teacherid;
         $result->publishedby = $teacherid;
-        $result->timereviewed = $result->timereviewed ?: $now;
         $result->timepublished = $now;
+        $result->timestudentviewed = null;
         $DB->update_record('local_ai_grading_result', $result);
 
         return [
@@ -527,7 +694,8 @@ class grading_service {
             $params['vplid'] = $vplid;
         }
 
-        $sql = "SELECT r.id, r.configid, r.submissionid, r.finaltotalgrade, r.aitotalgrade, r.timepublished,
+        $sql = "SELECT r.id, r.configid, r.submissionid, r.finaltotalgrade, r.aitotalgrade,
+                       r.timepublished, r.timereviewed, r.timestudentviewed,
                        cfg.vplid, v.name AS vplname, cm.id AS cmid
                   FROM {local_ai_grading_result} r
                   JOIN {local_ai_grading_config} cfg ON cfg.id = r.configid
@@ -551,6 +719,9 @@ class grading_service {
             }
             $seen[(int)$record->vplid] = true;
             $grade = $record->finaltotalgrade === null ? null : round((float)$record->finaltotalgrade, 2);
+            $reviewedbyteacher = !empty($record->timereviewed);
+            $modifiedbyteacher = self::is_result_modified((int)$record->id);
+            $read = !empty($record->timestudentviewed);
             $list[] = [
                 'resultid' => (int)$record->id,
                 'vplid' => (int)$record->vplid,
@@ -559,7 +730,18 @@ class grading_service {
                 'grade' => $grade === null ? null : self::format_number($grade),
                 'gradeColorClass' => self::grade_color_class($grade, 100),
                 'timepublishedText' => userdate((int)$record->timepublished),
-                'url' => (new \moodle_url('/local/ai_grading/feedback.php', ['id' => (int)$record->cmid]))->out(false),
+                'reviewedByTeacher' => $reviewedbyteacher,
+                'modifiedByTeacher' => $modifiedbyteacher,
+                'originLabel' => get_string(
+                    $reviewedbyteacher ? 'assistant:originteacher' : 'assistant:originai',
+                    'local_ai_grading'
+                ),
+                'read' => $read,
+                'unread' => !$read,
+                // El estudiante revisa su retroalimentación completa desde la página de
+                // edición de su actividad VPL (donde el asistente la muestra en detalle).
+                'url' => (new \moodle_url('/mod/vpl/forms/edit.php',
+                    ['id' => (int)$record->cmid, 'userid' => $userid]))->out(false),
             ];
         }
         return $list;
@@ -596,16 +778,19 @@ class grading_service {
 
         $activity = vpl_repository::get_activity($courseid, $vplid);
         $grade = $record->finaltotalgrade === null ? null : round((float)$record->finaltotalgrade, 2);
+        $reviewedbyteacher = !empty($record->timereviewed);
         $details = self::get_result_details((int)$record->id);
+        $modifiedbyteacher = self::details_modified($details, $record);
 
         $criteria = [];
         foreach ($details as $detail) {
             $shownscore = $detail['finalscore'] !== null ? $detail['finalscore'] : $detail['score'];
             $showndetail = trim((string)$detail['finaldetail']) !== '' ? $detail['finaldetail'] : $detail['detail'];
+            $shownlevel = trim((string)$detail['finalLevelName']) !== '' ? $detail['finalLevelName'] : $detail['levelName'];
             $criteria[] = [
                 'name' => $detail['criterionName'],
-                'levelName' => $detail['levelName'],
-                'hasLevel' => trim((string)$detail['levelName']) !== '',
+                'levelName' => $shownlevel,
+                'hasLevel' => trim((string)$shownlevel) !== '',
                 'score' => $shownscore === null ? null : self::format_number($shownscore),
                 'max' => self::format_number($detail['max']),
                 'colorClass' => self::grade_color_class($shownscore, (float)$detail['max']),
@@ -638,7 +823,16 @@ class grading_service {
             'gradeColorClass' => self::grade_color_class($grade, 100),
             'timesubmittedText' => userdate((int)$record->timesubmitted),
             'timepublishedText' => userdate((int)$record->timepublished),
-            'reviewedBy' => get_string('feedbackreviewedbyvalue', 'local_ai_grading'),
+            'reviewedByTeacher' => $reviewedbyteacher,
+            'modifiedByTeacher' => $modifiedbyteacher,
+            'originLabel' => get_string(
+                $reviewedbyteacher ? 'feedback:originteacher' : 'feedback:originai',
+                'local_ai_grading'
+            ),
+            'originHelp' => get_string(
+                $reviewedbyteacher ? 'feedback:originteacherhelp' : 'feedback:originaihelp',
+                'local_ai_grading'
+            ),
             'generalFeedback' => $generalfeedback,
             'hasGeneralFeedback' => trim((string)$generalfeedback) !== '',
             'criteria' => $criteria,
@@ -649,6 +843,41 @@ class grading_service {
             'executionOutput' => $executionoutput,
             'hasExecutionOutput' => trim($executionoutput) !== '',
         ];
+    }
+
+    /**
+     * Marks the latest published feedback for a student/VPL activity as read.
+     *
+     * Called when the student opens the full feedback page. Only the most
+     * recently published result (the one surfaced in the assistant) is marked,
+     * and only the first time, so the original read timestamp is preserved.
+     * When a newer result is published later it starts unread again.
+     *
+     * @param int $courseid Course id.
+     * @param int $userid Student id (the current user).
+     * @param int $vplid VPL instance id.
+     * @return void
+     */
+    public static function mark_student_feedback_read(int $courseid, int $userid, int $vplid): void {
+        global $DB;
+
+        $sql = "SELECT r.id, r.timestudentviewed
+                  FROM {local_ai_grading_result} r
+                  JOIN {local_ai_grading_config} cfg ON cfg.id = r.configid
+                 WHERE cfg.courseid = :courseid
+                   AND cfg.vplid = :vplid
+                   AND r.studentid = :userid
+                   AND r.timepublished IS NOT NULL
+              ORDER BY r.timepublished DESC, r.id DESC";
+        $records = $DB->get_records_sql($sql, [
+            'courseid' => $courseid,
+            'vplid' => $vplid,
+            'userid' => $userid,
+        ], 0, 1);
+        $record = $records ? reset($records) : null;
+        if ($record && empty($record->timestudentviewed)) {
+            $DB->set_field('local_ai_grading_result', 'timestudentviewed', time(), ['id' => (int)$record->id]);
+        }
     }
 
     /**
@@ -1237,7 +1466,6 @@ class grading_service {
             'submission' => [
                 'attempt_no' => (string)$submission['attemptNo'],
                 'source_code' => $submission['source_code'],
-                'execution_output' => $submission['execution_output'] ?? '',
             ],
         ];
     }
@@ -1557,6 +1785,7 @@ class grading_service {
         $record = $DB->get_record_sql($sql, ['resultid' => $resultid], MUST_EXIST);
         $formatted = self::format_result($record);
         $formatted['details'] = self::get_result_details($resultid);
+        $formatted['modifiedByTeacher'] = self::details_modified($formatted['details'], $record);
         return $formatted;
     }
 
@@ -1579,6 +1808,7 @@ class grading_service {
         return array_map(static function(\stdClass $record): array {
             $formatted = self::format_result($record);
             $formatted['details'] = self::get_result_details((int)$record->id);
+            $formatted['modifiedByTeacher'] = self::details_modified($formatted['details'], $record);
             return $formatted;
         }, array_values($records));
     }
@@ -1610,12 +1840,69 @@ class grading_service {
             'studentfeedback' => (string)$record->studentfeedback,
             'errordetail' => (string)$record->errordetail,
             'reviewStatus' => $reviewed ? 'approved' : 'pending_review',
+            'reviewedByTeacher' => $reviewed,
             'publicationStatus' => $published ? 'published' : 'not_published',
             'timeevaluated' => empty($record->timeevaluated) ? null : (int)$record->timeevaluated,
             'timeevaluatedText' => empty($record->timeevaluated) ? '' : userdate((int)$record->timeevaluated),
             'timereviewed' => empty($record->timereviewed) ? null : (int)$record->timereviewed,
             'timepublished' => empty($record->timepublished) ? null : (int)$record->timepublished,
         ];
+    }
+
+    /**
+     * Decides whether the teacher changed anything relative to the AI proposal.
+     *
+     * A result is "modified" only after it has been reviewed and at least one final
+     * level, criterion detail, the general feedback or the internal comment differs
+     * from what the AI produced.
+     *
+     * @param array $details Result criterion details (from get_result_details).
+     * @param \stdClass $record Result row.
+     * @return bool
+     */
+    private static function details_modified(array $details, \stdClass $record): bool {
+        if (empty($record->timereviewed)) {
+            return false;
+        }
+
+        $aifeedbackparts = [];
+        foreach ($details as $detail) {
+            if ($detail['finallevelid'] !== null && $detail['levelid'] !== null
+                    && (int)$detail['finallevelid'] !== (int)$detail['levelid']) {
+                return true;
+            }
+            if (trim((string)$detail['finaldetail']) !== trim((string)$detail['detail'])) {
+                return true;
+            }
+            $aifeedbackparts[] = $detail['criterionName'] . ': ' . $detail['detail'];
+        }
+
+        $aifeedback = trim(implode("\n\n", $aifeedbackparts));
+        $finalfeedback = trim((string)$record->finalfeedback);
+        if ($finalfeedback !== '' && $finalfeedback !== $aifeedback) {
+            return true;
+        }
+        if (trim((string)$record->studentfeedback) !== '') {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Convenience wrapper of details_modified() given only a result id.
+     *
+     * @param int $resultid Result id.
+     * @return bool
+     */
+    private static function is_result_modified(int $resultid): bool {
+        global $DB;
+
+        $record = $DB->get_record('local_ai_grading_result', ['id' => $resultid]);
+        if (!$record) {
+            return false;
+        }
+        return self::details_modified(self::get_result_details($resultid), $record);
     }
 
     /**
@@ -1627,12 +1914,14 @@ class grading_service {
     private static function get_result_details(int $resultid): array {
         global $DB;
 
-        $sql = "SELECT d.id, d.resultid, d.criterionid, d.levelid, d.aigrade, d.finalgrade,
+        $sql = "SELECT d.id, d.resultid, d.criterionid, d.levelid, d.finallevelid, d.aigrade, d.finalgrade,
                        d.aidetail, d.finaldetail, c.name AS criterionname, c.weight,
-                       l.name AS levelname, l.percentage
+                       l.name AS levelname, l.percentage,
+                       fl.name AS finallevelname, fl.percentage AS finalpercentage
                   FROM {local_ai_grading_rescrit} d
                   JOIN {local_ai_grading_criterion} c ON c.id = d.criterionid
              LEFT JOIN {local_ai_grading_level} l ON l.id = d.levelid
+             LEFT JOIN {local_ai_grading_level} fl ON fl.id = d.finallevelid
                  WHERE d.resultid = :resultid
               ORDER BY c.sortorder ASC, c.id ASC";
         $records = $DB->get_records_sql($sql, ['resultid' => $resultid]);
@@ -1642,13 +1931,18 @@ class grading_service {
                 'id' => (int)$record->id,
                 'criterionid' => (int)$record->criterionid,
                 'criterionName' => (string)$record->criterionname,
+                'max' => (float)$record->weight,
+                // Propuesta de la IA.
                 'levelid' => empty($record->levelid) ? null : (int)$record->levelid,
                 'levelName' => (string)$record->levelname,
                 'percentage' => $record->percentage === null ? null : (float)$record->percentage,
                 'score' => $record->aigrade === null ? null : round((float)$record->aigrade, 2),
-                'finalscore' => $record->finalgrade === null ? null : round((float)$record->finalgrade, 2),
-                'max' => (float)$record->weight,
                 'detail' => (string)$record->aidetail,
+                // Decisión final del docente (parte igual a la IA).
+                'finallevelid' => empty($record->finallevelid) ? null : (int)$record->finallevelid,
+                'finalLevelName' => (string)$record->finallevelname,
+                'finalpercentage' => $record->finalpercentage === null ? null : (float)$record->finalpercentage,
+                'finalscore' => $record->finalgrade === null ? null : round((float)$record->finalgrade, 2),
                 'finaldetail' => (string)$record->finaldetail,
             ];
         }
@@ -1680,8 +1974,11 @@ class grading_service {
                 'resultid' => $resultid,
                 'criterionid' => $criterionid,
                 'levelid' => $levelid,
+                'finallevelid' => $levelid,
                 'aigrade' => round($score, 2),
+                'finalgrade' => round($score, 2),
                 'aidetail' => (string)$detail['detail'],
+                'finaldetail' => (string)$detail['detail'],
             ]);
         }
     }
@@ -1726,7 +2023,9 @@ class grading_service {
         $details = self::get_result_details($resultid);
         $parts = [];
         foreach ($details as $detail) {
-            $parts[] = $detail['criterionName'] . ': ' . $detail['detail'];
+            // Prefiere la redacción final del docente; si no la editó, usa la de la IA.
+            $text = trim((string)$detail['finaldetail']) !== '' ? $detail['finaldetail'] : $detail['detail'];
+            $parts[] = $detail['criterionName'] . ': ' . $text;
         }
         return implode("\n\n", $parts);
     }

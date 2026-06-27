@@ -27,9 +27,13 @@
             <div class="aig-summary-meta">
                 <div><span>{{#str}}feedback:submitted, local_ai_grading{{/str}}:</span> {{timesubmittedText}}</div>
                 <div><span>{{#str}}feedback:published, local_ai_grading{{/str}}:</span> {{timepublishedText}}</div>
-                <div><span>{{#str}}feedback:reviewedby, local_ai_grading{{/str}}:</span> {{reviewedBy}}</div>
+                <div class="aig-origin-line">
+                    <span>{{#str}}feedback:originlabel, local_ai_grading{{/str}}:</span>
+                    <span class="aig-origin-badge {{#reviewedByTeacher}}aig-origin--teacher{{/reviewedByTeacher}}{{^reviewedByTeacher}}aig-origin--ai{{/reviewedByTeacher}}">{{originLabel}}</span>
+                </div>
             </div>
         </div>
+        <p class="aig-origin-help aig-muted">{{originHelp}}</p>
     </section>
 
     {{! Card 2: rubric breakdown }}

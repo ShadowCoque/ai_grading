@@ -2,27 +2,35 @@
     @template local_ai_grading/student_assistant
 
     Floating assistant injected on course/VPL pages for students that have
-    published AI feedback. Mirrors the docking pattern used by local_code_mentor
-    but rendered fully server-side (no AJAX): each entry links to feedback.php.
+    published AI feedback. Rendered fully server-side (no AJAX). Each entry links
+    to the student's VPL activity editor (/mod/vpl/forms/edit.php), where this same
+    assistant opens automatically and shows the full feedback (fullview/detail).
 
     Context variables:
     * firstname - Student first name.
-    * count - Number of published feedback entries.
-    * hasmany - True when there is more than one entry.
-    * feedback - List of { activityName, grade, gradeColorClass, url, isCurrent, timepublishedText }.
+    * count, hasmany, unreadcount, hasunread - Summary counters.
+    * feedback - Summary list. Each item: { activityName, grade, gradeColorClass,
+                  url, isCurrent, timepublishedText, unread, phases }.
+    * fullview - True on the VPL edit page: render the full detail below.
+    * detail - Full feedback for the current activity { activityName, grade,
+                gradeColorClass, generalFeedback, hasGeneralFeedback, criteria,
+                hasCriteria, timepublishedText, phases }.
+    * others - Remaining activities (summary) when in fullview.
+    * hasothers - True when there is at least one other activity.
+    Each phases item: { label, cls, on }.
 }}
 <div class="aig-assistant" data-region="ai-grading-assistant">
     <button type="button" id="aig-assistant-toggle" class="aig-assistant-toggle"
-        aria-label="{{#str}}assistant:open, local_ai_grading{{/str}}" aria-expanded="false">
+        aria-label="{{#str}}assistant:open, local_ai_grading{{/str}}" aria-expanded="{{#fullview}}true{{/fullview}}{{^fullview}}false{{/fullview}}">
         <svg class="aig-assistant-icon" width="26" height="26" viewBox="0 0 24 24" fill="none"
             stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4z"/>
             <path d="M18 14l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>
         </svg>
-        <span class="aig-assistant-badge">{{count}}</span>
+        {{#hasunread}}<span class="aig-assistant-badge">{{unreadcount}}</span>{{/hasunread}}
     </button>
 
-    <aside id="aig-assistant-panel" class="aig-assistant-panel" role="dialog" aria-modal="false"
+    <aside id="aig-assistant-panel" class="aig-assistant-panel{{#fullview}} is-open{{/fullview}}" role="dialog" aria-modal="false"
         aria-label="{{#str}}assistant:title, local_ai_grading{{/str}}">
         <div class="aig-assistant-header">
             <div class="aig-assistant-header-title">
@@ -37,31 +45,90 @@
         </div>
 
         <div class="aig-assistant-body">
-            <p class="aig-assistant-greeting">{{#str}}assistant:greeting, local_ai_grading, {{firstname}}{{/str}}</p>
-            <p class="aig-assistant-intro">{{#str}}assistant:intro, local_ai_grading{{/str}}</p>
+            {{! ===== Vista COMPLETA: solo en la página de edición de la actividad VPL ===== }}
+            {{#detail}}
+                <section class="aig-assistant-detail">
+                    <div class="aig-detail-head">
+                        <h3 class="aig-detail-title">{{activityName}}</h3>
+                        {{#grade}}
+                            <span class="aig-assistant-grade {{gradeColorClass}}">{{grade}}<small>/100</small></span>
+                        {{/grade}}
+                        {{^grade}}
+                            <span class="aig-assistant-grade aig-grade--none">&mdash;</span>
+                        {{/grade}}
+                    </div>
+                    <div class="aig-detail-meta">{{timepublishedText}}</div>
+                    <div class="aig-phase-tags">
+                        {{#phases}}<span class="aig-phase-tag {{cls}}{{#on}} is-on{{/on}}{{^on}} is-off{{/on}}">{{label}}</span>{{/phases}}
+                    </div>
+                    {{#hasGeneralFeedback}}
+                        <div class="aig-detail-feedback">{{generalFeedback}}</div>
+                    {{/hasGeneralFeedback}}
+                    {{#hasCriteria}}
+                        <h4 class="aig-detail-subtitle">{{#str}}assistant:breakdown, local_ai_grading{{/str}}</h4>
+                        <ul class="aig-detail-criteria">
+                            {{#criteria}}
+                                <li class="aig-detail-criterion {{colorClass}}">
+                                    <div class="aig-detail-criterion-head">
+                                        <span>{{name}}</span>
+                                        <strong>{{score}} / {{max}}</strong>
+                                    </div>
+                                    {{#hasLevel}}<span class="aig-detail-level">{{levelName}}</span>{{/hasLevel}}
+                                    {{#hasDetail}}<p class="aig-detail-criterion-text">{{detail}}</p>{{/hasDetail}}
+                                </li>
+                            {{/criteria}}
+                        </ul>
+                    {{/hasCriteria}}
+                </section>
 
-            <div class="aig-assistant-list">
-                {{#feedback}}
-                    <a class="aig-assistant-card" href="{{url}}">
-                        <div class="aig-assistant-card-main">
-                            <span class="aig-assistant-card-name">{{activityName}}</span>
-                            {{#isCurrent}}
-                                <span class="aig-assistant-tag">{{#str}}assistant:current, local_ai_grading{{/str}}</span>
-                            {{/isCurrent}}
-                            <span class="aig-assistant-card-date">{{timepublishedText}}</span>
-                        </div>
-                        <div class="aig-assistant-card-side">
-                            {{#grade}}
-                                <span class="aig-assistant-grade {{gradeColorClass}}">{{grade}}<small>/100</small></span>
-                            {{/grade}}
-                            {{^grade}}
-                                <span class="aig-assistant-grade aig-grade--none">&mdash;</span>
-                            {{/grade}}
-                        </div>
-                        <span class="aig-assistant-cta">{{#str}}assistant:viewfeedback, local_ai_grading{{/str}} &rarr;</span>
-                    </a>
-                {{/feedback}}
-            </div>
+                {{#hasothers}}
+                    <p class="aig-assistant-others-label">{{#str}}assistant:otheractivities, local_ai_grading{{/str}}</p>
+                    <div class="aig-assistant-list">
+                        {{#others}}
+                            <a class="aig-assistant-card aig-assistant-card--compact{{#unread}} aig-assistant-card--unread{{/unread}}" href="{{url}}">
+                                <span class="aig-assistant-card-name">{{activityName}}</span>
+                                {{#grade}}<span class="aig-assistant-grade {{gradeColorClass}}">{{grade}}<small>/100</small></span>{{/grade}}
+                                {{^grade}}<span class="aig-assistant-grade aig-grade--none">&mdash;</span>{{/grade}}
+                            </a>
+                        {{/others}}
+                    </div>
+                {{/hasothers}}
+            {{/detail}}
+
+            {{! ===== Vista RESUMEN: desde cualquier otra página del curso ===== }}
+            {{^detail}}
+                <p class="aig-assistant-greeting">{{#str}}assistant:greeting, local_ai_grading, {{firstname}}{{/str}}</p>
+                <p class="aig-assistant-intro">{{#str}}assistant:intro, local_ai_grading{{/str}}</p>
+
+                <div class="aig-assistant-list">
+                    {{#feedback}}
+                        <a class="aig-assistant-card{{#unread}} aig-assistant-card--unread{{/unread}}" href="{{url}}">
+                            <div class="aig-assistant-card-main">
+                                <span class="aig-assistant-card-name">
+                                    {{#unread}}<span class="aig-assistant-dot" aria-hidden="true"></span>{{/unread}}
+                                    {{activityName}}
+                                </span>
+                                {{#isCurrent}}
+                                    <span class="aig-assistant-tag">{{#str}}assistant:current, local_ai_grading{{/str}}</span>
+                                {{/isCurrent}}
+                                <span class="aig-assistant-card-date">{{timepublishedText}}</span>
+                            </div>
+                            <div class="aig-assistant-card-side">
+                                {{#grade}}
+                                    <span class="aig-assistant-grade {{gradeColorClass}}">{{grade}}<small>/100</small></span>
+                                {{/grade}}
+                                {{^grade}}
+                                    <span class="aig-assistant-grade aig-grade--none">&mdash;</span>
+                                {{/grade}}
+                            </div>
+                            <div class="aig-phase-tags">
+                                {{#phases}}<span class="aig-phase-tag {{cls}}{{#on}} is-on{{/on}}{{^on}} is-off{{/on}}">{{label}}</span>{{/phases}}
+                            </div>
+                            <span class="aig-assistant-cta">{{#str}}assistant:viewfeedback, local_ai_grading{{/str}} &rarr;</span>
+                        </a>
+                    {{/feedback}}
+                </div>
+            {{/detail}}
         </div>
     </aside>
 </div>

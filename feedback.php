@@ -44,6 +44,11 @@ $PAGE->requires->js_call_amd('local_ai_grading/student', 'init');
 
 $feedback = grading_service::get_student_feedback((int)$course->id, (int)$USER->id, (int)$cm->instance);
 
+if ($feedback !== null) {
+    // Opening the full feedback marks it as read for the floating assistant.
+    grading_service::mark_student_feedback_read((int)$course->id, (int)$USER->id, (int)$cm->instance);
+}
+
 echo $OUTPUT->header();
 
 if ($feedback === null) {

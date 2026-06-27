@@ -48,23 +48,119 @@ class student_assistant implements renderable, templatable {
      * @return array
      */
     public function export_for_template(renderer_base $output): array {
-        global $USER;
+        global $USER, $PAGE;
+
+        $courseid = ($PAGE->course && $PAGE->course->id) ? (int)$PAGE->course->id : 0;
+
+        // El feedback completo solo se muestra dentro de la ventana del asistente cuando el
+        // estudiante está en la página de edición de su actividad VPL. Desde cualquier otra
+        // página solo se ve el resumen con el botón para ir a esa página. Este hook corre al
+        // final de la generación de la página, cuando $PAGE->url ya apunta a edit.php.
+        $onvpledit = $PAGE->url
+            && strpos($PAGE->url->out_omit_querystring(), '/mod/vpl/forms/edit.php') !== false;
+
+        // cmid de la actividad VPL que se está editando (parámetro id de edit.php).
+        $editcmid = 0;
+        if ($onvpledit) {
+            $editcmid = (int)$PAGE->url->get_param('id');
+            if ($editcmid <= 0) {
+                $editcmid = optional_param('id', 0, PARAM_INT);
+            }
+        }
+
+        // vplid de la actividad actual. Lo resolvemos por el cmid de la URL de edición (no
+        // depende del momento en que se construyó la navegación, a diferencia de lib.php);
+        // si no estamos en edit.php usamos el que detectó lib.php para resaltar la actividad.
+        $currentvplid = (int)$this->currentvplid;
+        if ($editcmid > 0) {
+            foreach ($this->feedback as $candidate) {
+                if ((int)$candidate['cmid'] === $editcmid) {
+                    $currentvplid = (int)$candidate['vplid'];
+                    break;
+                }
+            }
+        }
 
         // Flag the activity matching the current page and bubble it to the top.
         $items = [];
+        $unread = 0;
         foreach ($this->feedback as $item) {
-            $item['isCurrent'] = $this->currentvplid > 0 && (int)$item['vplid'] === $this->currentvplid;
+            $item['isCurrent'] = $currentvplid > 0 && (int)$item['vplid'] === $currentvplid;
+            $item['phases'] = self::phase_tags(!empty($item['reviewedByTeacher']), !empty($item['modifiedByTeacher']));
+            if (!empty($item['unread'])) {
+                $unread++;
+            }
             $items[] = $item;
         }
         usort($items, static function(array $a, array $b): int {
             return ($b['isCurrent'] ? 1 : 0) <=> ($a['isCurrent'] ? 1 : 0);
         });
 
+        // Detalle completo de la actividad actual (solo en la página de edición de VPL).
+        $detail = null;
+        if ($onvpledit && $currentvplid > 0 && $courseid > 0) {
+            $full = \local_ai_grading\local\grading_service::get_student_feedback(
+                $courseid,
+                (int)$USER->id,
+                $currentvplid
+            );
+            if ($full !== null) {
+                $full['phases'] = self::phase_tags(
+                    !empty($full['reviewedByTeacher']),
+                    !empty($full['modifiedByTeacher'])
+                );
+                $detail = $full;
+            }
+        }
+
+        // En vista de detalle, el resto de actividades se listan aparte como resumen.
+        $others = [];
+        if ($detail !== null) {
+            foreach ($items as $item) {
+                if (empty($item['isCurrent'])) {
+                    $others[] = $item;
+                }
+            }
+        }
+
         return [
             'firstname' => $USER->firstname,
             'count' => count($items),
             'hasmany' => count($items) > 1,
+            'unreadcount' => $unread,
+            'hasunread' => $unread > 0,
             'feedback' => $items,
+            'fullview' => $detail !== null,
+            'detail' => $detail,
+            'others' => $others,
+            'hasothers' => !empty($others),
+        ];
+    }
+
+    /**
+     * Builds the three student-facing phase tags for a published result.
+     *
+     * @param bool $reviewed Whether the teacher reviewed the result.
+     * @param bool $modified Whether the teacher modified the AI proposal.
+     * @return array
+     */
+    private static function phase_tags(bool $reviewed, bool $modified): array {
+        return [
+            [
+                'label' => get_string('phase:gradedai', 'local_ai_grading'),
+                'cls' => 'aig-phase-tag--ai',
+                'on' => true,
+            ],
+            [
+                'label' => get_string('phase:reviewed', 'local_ai_grading'),
+                'cls' => 'aig-phase-tag--reviewed',
+                'on' => $reviewed,
+            ],
+            [
+                'label' => get_string('phase:modified', 'local_ai_grading'),
+                'cls' => 'aig-phase-tag--modified',
+                'on' => $modified,
+            ],
         ];
     }
 }
