@@ -744,8 +744,11 @@ class grading_service {
                 'unread' => !$read,
                 // El estudiante revisa su retroalimentación completa desde la página de
                 // edición de su actividad VPL (donde el asistente la muestra en detalle).
+                // El parámetro aigfocus=1 indica que viene desde "Ver retroalimentación
+                // completa": la página de edición activará la vista enfocada (pantalla
+                // completa de VPL con código + nota/comentarios y el asistente a la derecha).
                 'url' => (new \moodle_url('/mod/vpl/forms/edit.php',
-                    ['id' => (int)$record->cmid, 'userid' => $userid]))->out(false),
+                    ['id' => (int)$record->cmid, 'userid' => $userid, 'aigfocus' => 1]))->out(false),
             ];
         }
         return $list;
@@ -976,6 +979,21 @@ class grading_service {
         global $DB;
 
         return $DB->get_record('local_ai_grading_config', ['id' => $configid], '*', MUST_EXIST);
+    }
+
+    /**
+     * Resolves the VPL activity (name + description) of a config, tolerating failures.
+     *
+     * @param int $configid Config id.
+     * @return array {name, description, cmid} (empty strings/0 when unavailable).
+     */
+    private static function activity_for_config(int $configid): array {
+        try {
+            $config = self::get_config_by_id($configid);
+            return vpl_repository::get_activity((int)$config->courseid, (int)$config->vplid);
+        } catch (\Throwable $ignored) {
+            return ['name' => '', 'description' => '', 'cmid' => 0];
+        }
     }
 
     /**
@@ -1686,7 +1704,12 @@ class grading_service {
 
         $records = $DB->get_records_sql($sql, ['configid' => $configid]);
         return array_map(static function(\stdClass $record): array {
-            return self::format_ai_test($record);
+            $formatted = self::format_ai_test($record);
+            // Incluye el desglose por criterio para que la interfaz pueda mostrar
+            // ("Ver") la retroalimentación completa de una prueba guardada, no solo
+            // eliminarla. format_ai_test ya incluye el comentario general.
+            $formatted['details'] = self::get_ai_test_details((int)$record->id);
+            return $formatted;
         }, array_values($records));
     }
 
@@ -1802,6 +1825,12 @@ class grading_service {
         $formatted = self::format_result($record);
         $formatted['details'] = self::get_result_details($resultid);
         $formatted['modifiedByTeacher'] = self::details_modified($formatted['details'], $record);
+        // Adjunta la descripción del ejercicio VPL a cada resultado, así el modal
+        // "Ver y editar" la muestra desde una fuente fresca por petición (no depende
+        // del estado del navegador ni de la tarjeta de contexto).
+        $activity = self::activity_for_config((int)$record->configid);
+        $formatted['activityName'] = (string)($activity['name'] ?? '');
+        $formatted['activityDescription'] = (string)($activity['description'] ?? '');
         return $formatted;
     }
 
@@ -1821,10 +1850,15 @@ class grading_service {
                  WHERE r.configid = :configid
               ORDER BY u.lastname, u.firstname, u.id";
         $records = $DB->get_records_sql($sql, ['configid' => $configid]);
-        return array_map(static function(\stdClass $record): array {
+        // Todos los resultados de un config comparten la misma actividad VPL: resuélvela
+        // una sola vez y adjúntala a cada fila (la usa el modal "Ver y editar").
+        $activity = self::activity_for_config($configid);
+        return array_map(static function(\stdClass $record) use ($activity): array {
             $formatted = self::format_result($record);
             $formatted['details'] = self::get_result_details((int)$record->id);
             $formatted['modifiedByTeacher'] = self::details_modified($formatted['details'], $record);
+            $formatted['activityName'] = (string)($activity['name'] ?? '');
+            $formatted['activityDescription'] = (string)($activity['description'] ?? '');
             return $formatted;
         }, array_values($records));
     }

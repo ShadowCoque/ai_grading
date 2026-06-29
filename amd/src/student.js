@@ -71,10 +71,91 @@ define(function() {
         });
     };
 
+    /**
+     * Vista enfocada al llegar desde "Ver retroalimentación completa".
+     *
+     * Cuando la URL trae aigfocus=1 y estamos en la página de edición de VPL,
+     * activa la pantalla completa de VPL (equivalente a Alt+F) para ver el código
+     * y el panel de nota/comentarios, marca el cuerpo para que el CSS reserve la
+     * columna derecha al asistente (que ya se abre solo) y fuerza un "resize" para
+     * que VPL reacomode su layout dentro del espacio restante. Tolerante a fallos:
+     * si el IDE de VPL no aparece, no hace nada.
+     */
+    const initVplFocus = function() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('aigfocus') !== '1') {
+            return;
+        }
+
+        // Quita el parámetro de la URL para no repetir el modo foco al recargar.
+        if (window.history && window.history.replaceState) {
+            params.delete('aigfocus');
+            const query = params.toString();
+            window.history.replaceState(null, '',
+                window.location.pathname + (query ? '?' + query : '') + window.location.hash);
+        }
+
+        const panel = document.getElementById('aig-assistant-panel');
+        const toggle = document.getElementById('aig-assistant-toggle');
+        let attempts = 0;
+        const maxAttempts = 60; // ~12 s a 200 ms: da tiempo a que cargue el IDE de VPL.
+
+        const timer = window.setInterval(function() {
+            attempts += 1;
+            const fsButton = document.getElementById('vpl_ide_fullscreen');
+            const ideReady = fsButton && fsButton.offsetParent !== null;
+
+            if (ideReady) {
+                window.clearInterval(timer);
+                try {
+                    // Reserva la columna derecha para el asistente (vía CSS).
+                    document.body.classList.add('aig-vpl-focus');
+                    // Activa la pantalla completa de VPL si aún no lo está.
+                    if (!document.body.classList.contains('vpl_body_fullscreen')) {
+                        fsButton.click();
+                    }
+                    // Asegura el asistente abierto a la derecha.
+                    if (panel && !panel.classList.contains('is-open')) {
+                        panel.classList.add('is-open');
+                        if (toggle) {
+                            toggle.setAttribute('aria-expanded', 'true');
+                        }
+                    }
+                    // VPL recalcula su layout al redimensionar la ventana. Antes de forzar
+                    // ese recálculo agrandamos el panel de resultado de VPL (#vpl_results,
+                    // "Nota propuesta + comentarios"), que por defecto es muy estrecho (~200px):
+                    // le damos ~40% del ancho disponible de VPL. autoResizeTab respeta ese
+                    // ancho y ajusta el editor de código al espacio restante.
+                    window.setTimeout(function() {
+                        try {
+                            const vplArea = window.innerWidth - 380;
+                            const resultEl = document.getElementById('vpl_results');
+                            if (resultEl && window.innerWidth >= 900 && vplArea > 700) {
+                                resultEl.style.width = Math.max(360, Math.round(vplArea * 0.4)) + 'px';
+                            }
+                        } catch (ignore) {
+                            // Si VPL cambia su estructura, seguimos sin romper la página.
+                        }
+                        window.dispatchEvent(new Event('resize'));
+                    }, 180);
+                } catch (e) {
+                    // Si algo cambió en VPL, no rompemos la página: deshacemos la marca.
+                    document.body.classList.remove('aig-vpl-focus');
+                }
+                return;
+            }
+
+            if (attempts >= maxAttempts) {
+                window.clearInterval(timer);
+            }
+        }, 200);
+    };
+
     return {
         init: function() {
             initAssistant();
             initTabs();
+            initVplFocus();
         }
     };
 });

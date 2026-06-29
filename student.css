@@ -574,7 +574,19 @@
 
 /* Fase alcanzada: color propio. Fase no alcanzada: atenuada. */
 .aig-phase-tag.is-off {
-    opacity: 0.45;
+    opacity: 0.55;
+}
+
+/* Marca ✓/○ antes de la etiqueta: distingue de un vistazo lo cumplido de lo
+   pendiente (consistente con el flujo de fases del docente en la interfaz 2). */
+.aig-phase-tag::before {
+    content: "\25CB";
+    margin-right: 4px;
+    font-weight: 800;
+}
+
+.aig-phase-tag.is-on::before {
+    content: "\2713";
 }
 
 .aig-phase-tag--ai.is-on {
@@ -713,4 +725,17 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+}
+
+/* ====================================================================== */
+/* Vista enfocada (aigfocus): al llegar desde "Ver retroalimentación       */
+/* completa", VPL entra en pantalla completa y el asistente ocupa la        */
+/* columna derecha. Encogemos el contenedor de VPL para que el código y el  */
+/* panel de nota/comentarios queden a la izquierda sin solaparse con el     */
+/* asistente (z-index 9999 del asistente > 90 del fullscreen de VPL).       */
+/* ====================================================================== */
+@media (min-width: 900px) {
+    body.aig-vpl-focus.vpl_body_fullscreen .vpl_ide_root_fullscreen {
+        width: calc(100% - 380px);
+    }
 }
