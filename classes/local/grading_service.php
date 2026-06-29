@@ -493,6 +493,9 @@ class grading_service {
             $result->aitotalgrade = round($total, 2);
             // La nota final parte de la propuesta IA; el docente la ajusta por criterio.
             $result->finaltotalgrade = round($total, 2);
+            // Comentario general REAL de la IA (general_feedback del contrato n8n). Es
+            // independiente de los detalles por criterio; antes se descartaba.
+            $result->aifeedback = (string)($response['general_feedback'] ?? '');
             $result->errordetail = null;
             $result->timeevaluated = $now;
             // Una evaluación IA nueva reemplaza cualquier revisión/publicación previa:
@@ -644,9 +647,10 @@ class grading_service {
         if ($result->finaltotalgrade === null) {
             $result->finaltotalgrade = (float)$result->aitotalgrade;
         }
-        if ($result->finalfeedback === null || trim((string)$result->finalfeedback) === '') {
-            $result->finalfeedback = self::combined_ai_feedback((int)$result->id);
-        }
+        // El comentario general ya NO se "hornea" concatenando los detalles por criterio
+        // (eso duplicaba el desglose en la vista del estudiante). Si el docente no escribió
+        // un comentario general propio (finalfeedback), la vista usa el general real de la
+        // IA (aifeedback). Aquí solo se registra la publicación.
 
         // Publishing on its own does NOT imply the teacher reviewed the AI output.
         // The "reviewed" state is set exclusively by save_result_review(): if the
@@ -796,12 +800,24 @@ class grading_service {
                 'colorClass' => self::grade_color_class($shownscore, (float)$detail['max']),
                 'detail' => $showndetail,
                 'hasDetail' => trim((string)$showndetail) !== '',
+                // Distingue IA vs profesor: marca el criterio que el docente ajustó
+                // (nivel o comentario) respecto a la propuesta original de la IA.
+                'teacherAdjusted' => $reviewedbyteacher && self::criterion_adjusted($detail),
             ];
         }
 
-        $generalfeedback = trim((string)$record->finalfeedback) !== ''
-            ? (string)$record->finalfeedback
-            : self::combined_ai_feedback((int)$record->id);
+        // Comentario general que ve el estudiante: el general REAL de la IA
+        // (general_feedback, columna aifeedback). El docente puede escribir uno propio
+        // (finalfeedback) que tiene prioridad. PERO los resultados publicados antes de
+        // separar el general del desglose tienen en finalfeedback la antigua concatenación
+        // horneada de los detalles por criterio ("Criterio: detalle…"); esa forma se detecta
+        // y se descarta para no duplicar el desglose que ya se muestra arriba. En resultados
+        // antiguos sin aifeedback, el comentario general simplemente queda vacío y no se muestra.
+        $teachergeneral = trim((string)$record->finalfeedback);
+        if ($teachergeneral !== '' && $teachergeneral === self::baked_ai_feedback($details)) {
+            $teachergeneral = '';
+        }
+        $generalfeedback = $teachergeneral !== '' ? $teachergeneral : (string)$record->aifeedback;
 
         $sourcecode = '';
         $executionoutput = '';
@@ -1865,7 +1881,6 @@ class grading_service {
             return false;
         }
 
-        $aifeedbackparts = [];
         foreach ($details as $detail) {
             if ($detail['finallevelid'] !== null && $detail['levelid'] !== null
                     && (int)$detail['finallevelid'] !== (int)$detail['levelid']) {
@@ -1874,12 +1889,10 @@ class grading_service {
             if (trim((string)$detail['finaldetail']) !== trim((string)$detail['detail'])) {
                 return true;
             }
-            $aifeedbackparts[] = $detail['criterionName'] . ': ' . $detail['detail'];
         }
 
-        $aifeedback = trim(implode("\n\n", $aifeedbackparts));
         $finalfeedback = trim((string)$record->finalfeedback);
-        if ($finalfeedback !== '' && $finalfeedback !== $aifeedback) {
+        if ($finalfeedback !== '' && $finalfeedback !== self::baked_ai_feedback($details)) {
             return true;
         }
         if (trim((string)$record->studentfeedback) !== '') {
@@ -1887,6 +1900,24 @@ class grading_service {
         }
 
         return false;
+    }
+
+    /**
+     * Rebuilds the legacy "baked" general comment: the per-criterion AI details joined as
+     * "name: detail". Older published results stored exactly this string in finalfeedback
+     * before the real AI general_feedback (aifeedback) was kept on its own column. Detecting
+     * it lets the student view drop it instead of duplicating the criteria breakdown, and
+     * lets details_modified() tell an auto-baked comment apart from a real teacher edit.
+     *
+     * @param array $details Result criterion details (from get_result_details).
+     * @return string
+     */
+    private static function baked_ai_feedback(array $details): string {
+        $parts = [];
+        foreach ($details as $detail) {
+            $parts[] = $detail['criterionName'] . ': ' . $detail['detail'];
+        }
+        return trim(implode("\n\n", $parts));
     }
 
     /**
@@ -2014,20 +2045,20 @@ class grading_service {
     }
 
     /**
-     * Creates final feedback from AI criterion details.
+     * Decides whether the teacher adjusted one criterion relative to the AI proposal.
      *
-     * @param int $resultid Result id.
-     * @return string
+     * Used to tag criteria in the student view so the AI proposal can be told apart
+     * from a teacher change (level chosen or comment rewritten).
+     *
+     * @param array $detail One row from get_result_details().
+     * @return bool
      */
-    private static function combined_ai_feedback(int $resultid): string {
-        $details = self::get_result_details($resultid);
-        $parts = [];
-        foreach ($details as $detail) {
-            // Prefiere la redacción final del docente; si no la editó, usa la de la IA.
-            $text = trim((string)$detail['finaldetail']) !== '' ? $detail['finaldetail'] : $detail['detail'];
-            $parts[] = $detail['criterionName'] . ': ' . $text;
-        }
-        return implode("\n\n", $parts);
+    private static function criterion_adjusted(array $detail): bool {
+        $levelchanged = $detail['finallevelid'] !== null && $detail['levelid'] !== null
+            && (int)$detail['finallevelid'] !== (int)$detail['levelid'];
+        $detailchanged = trim((string)$detail['finaldetail']) !== ''
+            && trim((string)$detail['finaldetail']) !== trim((string)$detail['detail']);
+        return $levelchanged || $detailchanged;
     }
 
     /**

@@ -81,21 +81,6 @@ class student_assistant implements renderable, templatable {
             }
         }
 
-        // Flag the activity matching the current page and bubble it to the top.
-        $items = [];
-        $unread = 0;
-        foreach ($this->feedback as $item) {
-            $item['isCurrent'] = $currentvplid > 0 && (int)$item['vplid'] === $currentvplid;
-            $item['phases'] = self::phase_tags(!empty($item['reviewedByTeacher']), !empty($item['modifiedByTeacher']));
-            if (!empty($item['unread'])) {
-                $unread++;
-            }
-            $items[] = $item;
-        }
-        usort($items, static function(array $a, array $b): int {
-            return ($b['isCurrent'] ? 1 : 0) <=> ($a['isCurrent'] ? 1 : 0);
-        });
-
         // Detalle completo de la actividad actual (solo en la página de edición de VPL).
         $detail = null;
         if ($onvpledit && $currentvplid > 0 && $courseid > 0) {
@@ -110,8 +95,40 @@ class student_assistant implements renderable, templatable {
                     !empty($full['modifiedByTeacher'])
                 );
                 $detail = $full;
+                // Mostrar el detalle completo aquí (el asistente se abre en la página de
+                // edición de la actividad VPL) cuenta como "leído": marca la retroalimentación
+                // para que el badge de no leídos deje de aparecer. Antes solo lo hacía
+                // feedback.php, que no es la ruta real desde la tarjeta del asistente. Es
+                // idempotente: solo guarda la primera vez que se abre.
+                \local_ai_grading\local\grading_service::mark_student_feedback_read(
+                    $courseid,
+                    (int)$USER->id,
+                    $currentvplid
+                );
             }
         }
+
+        // Flag the activity matching the current page and bubble it to the top.
+        $items = [];
+        $unread = 0;
+        foreach ($this->feedback as $item) {
+            $item['isCurrent'] = $currentvplid > 0 && (int)$item['vplid'] === $currentvplid;
+            // Si en esta misma carga se está mostrando (y marcando como leído) el detalle de
+            // esta actividad, refléjalo ya para que el punto/contador de no leídos desaparezca
+            // sin esperar a la siguiente navegación.
+            if ($detail !== null && !empty($item['isCurrent'])) {
+                $item['read'] = true;
+                $item['unread'] = false;
+            }
+            $item['phases'] = self::phase_tags(!empty($item['reviewedByTeacher']), !empty($item['modifiedByTeacher']));
+            if (!empty($item['unread'])) {
+                $unread++;
+            }
+            $items[] = $item;
+        }
+        usort($items, static function(array $a, array $b): int {
+            return ($b['isCurrent'] ? 1 : 0) <=> ($a['isCurrent'] ? 1 : 0);
+        });
 
         // En vista de detalle, el resto de actividades se listan aparte como resumen.
         $others = [];

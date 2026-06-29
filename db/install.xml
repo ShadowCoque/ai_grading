@@ -146,6 +146,7 @@
         <FIELD NAME="aitotalgrade" TYPE="number" LENGTH="10" DECIMALS="5" NOTNULL="false" SEQUENCE="false"/>
         <FIELD NAME="finaltotalgrade" TYPE="number" LENGTH="10" DECIMALS="5" NOTNULL="false" SEQUENCE="false"/>
         <FIELD NAME="finalfeedback" TYPE="text" NOTNULL="false" SEQUENCE="false"/>
+        <FIELD NAME="aifeedback" TYPE="text" NOTNULL="false" SEQUENCE="false"/>
         <FIELD NAME="studentfeedback" TYPE="text" NOTNULL="false" SEQUENCE="false"/>
         <FIELD NAME="errordetail" TYPE="text" NOTNULL="false" SEQUENCE="false"/>
         <FIELD NAME="reviewedby" TYPE="int" LENGTH="10" NOTNULL="false" SEQUENCE="false"/>

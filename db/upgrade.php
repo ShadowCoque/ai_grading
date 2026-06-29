@@ -82,5 +82,19 @@ function xmldb_local_ai_grading_upgrade($oldversion): bool {
         upgrade_plugin_savepoint(true, 2026060901, 'local', 'ai_grading');
     }
 
+    if ($oldversion < 2026062700) {
+        // aifeedback: comentario general que devuelve la IA (general_feedback del
+        // contrato n8n). Antes se descartaba en run_result_ai() y la vista del
+        // estudiante "inventaba" un general concatenando los detalles por criterio,
+        // lo que duplicaba el desglose. Ahora se guarda el general real de la IA.
+        $table = new xmldb_table('local_ai_grading_result');
+        $field = new xmldb_field('aifeedback', XMLDB_TYPE_TEXT, null, null, null, null, null, 'finalfeedback');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        upgrade_plugin_savepoint(true, 2026062700, 'local', 'ai_grading');
+    }
+
     return true;
 }

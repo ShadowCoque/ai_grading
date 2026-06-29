@@ -61,9 +61,6 @@
                     <div class="aig-phase-tags">
                         {{#phases}}<span class="aig-phase-tag {{cls}}{{#on}} is-on{{/on}}{{^on}} is-off{{/on}}">{{label}}</span>{{/phases}}
                     </div>
-                    {{#hasGeneralFeedback}}
-                        <div class="aig-detail-feedback">{{generalFeedback}}</div>
-                    {{/hasGeneralFeedback}}
                     {{#hasCriteria}}
                         <h4 class="aig-detail-subtitle">{{#str}}assistant:breakdown, local_ai_grading{{/str}}</h4>
                         <ul class="aig-detail-criteria">
@@ -74,11 +71,16 @@
                                         <strong>{{score}} / {{max}}</strong>
                                     </div>
                                     {{#hasLevel}}<span class="aig-detail-level">{{levelName}}</span>{{/hasLevel}}
+                                    {{#teacherAdjusted}}<span class="aig-detail-adjusted">{{#str}}criterion:adjusted, local_ai_grading{{/str}}</span>{{/teacherAdjusted}}
                                     {{#hasDetail}}<p class="aig-detail-criterion-text">{{detail}}</p>{{/hasDetail}}
                                 </li>
                             {{/criteria}}
                         </ul>
                     {{/hasCriteria}}
+                    {{#hasGeneralFeedback}}
+                        <h4 class="aig-detail-subtitle">{{#str}}assistant:generalcomment, local_ai_grading{{/str}}</h4>
+                        <div class="aig-detail-feedback">{{generalFeedback}}</div>
+                    {{/hasGeneralFeedback}}
                 </section>
 
                 {{#hasothers}}

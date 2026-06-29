@@ -619,7 +619,9 @@ define(['core/ajax'], function(Ajax) {
                 <div class="ag-results-activity">
                     <span class="ag-results-activity-label">Actividad VPL</span>
                     <strong>${escapeHtml(activity ? activity.name : 'Actividad seleccionada')}</strong>
-                    <small>${escapeHtml(activity && activity.description ? activity.description : 'Sin descripción disponible.')}</small>
+                    ${activity && activity.description && String(activity.description).trim() !== ''
+                        ? descriptionDisclosure(activity.description, 'ag-description-toggle--inline', 'Clic para ver la descripción')
+                        : '<small>Sin descripción disponible.</small>'}
                     <div class="ag-results-status-line">
                         <span>Estado general:</span>
                         <span class="ag-badge ag-badge--neutral">${formatNumber(summary.evaluated || 0)} evaluados · ${formatNumber(pendingTotal)} pendientes</span>
@@ -693,7 +695,7 @@ define(['core/ajax'], function(Ajax) {
                 </div>
                 <button type="button" class="ag-btn ag-btn--primary ag-btn--sm" data-action="run-selected-results"
                     ${selectedRunnableResults().length && !state.bulkRunning ? '' : 'disabled'}>
-                    ${iconRefresh()}
+                    ${iconRobot()}
                     ${state.bulkRunning ? 'Evaluando...' : `Evaluar seleccionados (${selectedRunnableResults().length})`}
                 </button>
             </div>
@@ -753,7 +755,7 @@ define(['core/ajax'], function(Ajax) {
                         </button>
                         <button type="button" class="ag-btn ag-btn--outline ag-btn--sm" data-action="run-selected-results"
                             ${selectedRunnableResults().length && !state.bulkRunning ? '' : 'disabled'}>
-                            ${iconRefresh()}
+                            ${iconRobot()}
                             Re-evaluar por IA
                         </button>
                         <button type="button" class="ag-btn ag-btn--outline ag-btn--sm" data-action="clear-result-selection">
@@ -817,8 +819,8 @@ define(['core/ajax'], function(Ajax) {
             <td class="ag-col-actions">
                 <div class="ag-row-actions">
                     <button type="button" class="ag-icon-btn" data-action="view-result" data-result-id="${result.id}" title="Ver y editar" aria-label="Ver y editar">${iconEye()}</button>
-                    <button type="button" class="ag-icon-btn" data-action="run-one-result" data-result-id="${result.id}" title="Evaluar con IA" aria-label="Evaluar con IA"
-                        ${state.bulkRunning ? 'disabled' : ''}>${iconRefresh()}</button>
+                    <button type="button" class="ag-icon-btn ag-icon-btn--ai" data-action="run-one-result" data-result-id="${result.id}" title="Evaluar con IA" aria-label="Evaluar con IA"
+                        ${state.bulkRunning ? 'disabled' : ''}>${iconRobot()}</button>
                     <button type="button" class="ag-icon-btn ag-icon-btn--ok" data-action="publish-result" data-result-id="${result.id}" title="Aprobar y publicar" aria-label="Aprobar y publicar"
                         ${isPublishable(result) ? '' : 'disabled'}>${iconCheck()}</button>
                 </div>
@@ -879,6 +881,7 @@ define(['core/ajax'], function(Ajax) {
 
                 <div class="ag-drawer-body">
                     ${result.errordetail ? `<div class="ag-info-box ag-info-box--yellow">${escapeHtml(result.errordetail)}</div>` : ''}
+                    ${renderDrawerDescription(activity)}
                     <div class="ag-drawer-grid">
                         <div class="ag-drawer-main">${renderDrawerEditor(result, evaluated)}</div>
                         <aside class="ag-drawer-side">${renderDrawerCode(result)}</aside>
@@ -1019,6 +1022,33 @@ define(['core/ajax'], function(Ajax) {
             </div>
         `;
     };
+
+    // Disclosure reutilizable para la descripción del ejercicio VPL: oculta el texto tras un
+    // botón claro ("Clic para ver la descripción…") para no llenar la pantalla. Se usa en la
+    // tarjeta de contexto de resultados (compacto) y, a lo ancho, dentro del modal "Ver y editar".
+    const descriptionDisclosure = (description, modifier, label) => {
+        const text = description ? String(description).trim() : '';
+        if (text === '') {
+            return '';
+        }
+        return `
+            <details class="ag-description-toggle ${modifier || ''}">
+                <summary>
+                    <span class="ag-description-toggle-title">${iconBook()} ${escapeHtml(label)}</span>
+                    <span class="ag-description-toggle-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="ag-description-toggle-body">${escapeHtml(text)}</div>
+            </details>
+        `;
+    };
+
+    // Descripción del ejercicio VPL dentro del modal, en un panel colapsable a lo ancho.
+    // Permite saber QUÉ se está calificando sin empujar el editor ni el código hacia abajo.
+    const renderDrawerDescription = activity => descriptionDisclosure(
+        activity && activity.description ? activity.description : '',
+        'ag-description-toggle--wide',
+        'Clic para ver la descripción completa'
+    );
 
     // Panel lateral (1/3): código del estudiante y salida VPL en un espacio compacto.
     const renderDrawerCode = result => {
@@ -1237,8 +1267,7 @@ define(['core/ajax'], function(Ajax) {
         }
 
         if (action === 'close-result-drawer') {
-            state.activeResult = null;
-            renderResultDrawer();
+            closeResultDrawer();
             return;
         }
 
@@ -1644,12 +1673,45 @@ define(['core/ajax'], function(Ajax) {
         renderResultDrawer();
     };
 
+    // Compara el borrador en pantalla contra lo último cargado del servidor para saber si
+    // hay ediciones sin guardar (nivel elegido, retroalimentación por criterio o nota interna).
+    const isResultDraftDirty = () => {
+        if (!state.activeResult || !state.resultDraft) {
+            return false;
+        }
+        const baseline = buildResultDraft(state.activeResult);
+        if (String(state.resultDraft.studentfeedback || '') !== String(baseline.studentfeedback || '')) {
+            return true;
+        }
+        if (state.resultDraft.criteria.length !== baseline.criteria.length) {
+            return true;
+        }
+        return state.resultDraft.criteria.some((item, index) => {
+            const base = baseline.criteria[index];
+            return !base
+                || String(item.levelid) !== String(base.levelid)
+                || String(item.finaldetail || '') !== String(base.finaldetail || '');
+        });
+    };
+
+    // Cierra el modal, pero avisa antes si hay cambios sin guardar (también al pulsar el
+    // fondo o "Cerrar"), para no descartar ediciones del docente en silencio.
+    const closeResultDrawer = () => {
+        if (isResultDraftDirty()
+                && !window.confirm('Tienes cambios sin guardar en esta revisión. ¿Cerrar de todos modos y descartarlos?')) {
+            return;
+        }
+        state.activeResult = null;
+        renderResultDrawer();
+    };
+
     const saveResultReview = async() => {
         if (!state.activeResult) {
-            return;
+            return false;
         }
         state.savingResult = true;
         renderResultDrawer();
+        let ok = false;
         try {
             const data = await request('save_result_review', {
                 resultid: Number(state.activeResult.id),
@@ -1664,6 +1726,7 @@ define(['core/ajax'], function(Ajax) {
             state.activeResult = data.result;
             state.resultDraft = buildResultDraft(data.result);
             showToast(data.message || 'Revisión guardada.');
+            ok = true;
         } catch (error) {
             showToast(error.message || 'No se pudo guardar la revisión.');
         }
@@ -1672,12 +1735,23 @@ define(['core/ajax'], function(Ajax) {
         if (state.activeResult) {
             renderResultDrawer();
         }
+        return ok;
     };
 
     const publishResult = async resultId => {
         const id = resultId || (state.activeResult && state.activeResult.id);
         if (!id) {
             return;
+        }
+        // Si se publica desde el modal abierto y hay ediciones sin guardar, guárdalas
+        // primero: publicar debe reflejar lo que el docente ve en pantalla, no la última
+        // versión guardada. (Antes, editar un nivel y publicar sin "Guardar" perdía el cambio.)
+        const fromOpenDrawer = state.activeResult && String(state.activeResult.id) === String(id);
+        if (fromOpenDrawer && isResultDraftDirty()) {
+            const saved = await saveResultReview();
+            if (!saved) {
+                return;
+            }
         }
         try {
             const data = await request('publish_result', {resultid: Number(id)});
@@ -2143,12 +2217,12 @@ define(['core/ajax'], function(Ajax) {
         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
     const iconEye = () => svgIcon('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>');
     const iconPencil = () => svgIcon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>');
-    const iconRefresh = () => svgIcon('<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>');
     const iconCheck = () => svgIcon('<path d="M20 6 9 17l-5-5"/>');
     const iconSend = () => svgIcon('<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/>');
     const iconClose = () => svgIcon('<path d="M18 6 6 18"/><path d="M6 6l12 12"/>');
     const iconArrowLeft = () => svgIcon('<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>');
     const iconRobot = () => svgIcon('<rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/><path d="M2 13h2M20 13h2"/>');
+    const iconBook = () => svgIcon('<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>');
 
     const resultStatusBadge = status => {
         const labels = {
@@ -2243,6 +2317,7 @@ define(['core/ajax'], function(Ajax) {
         const files = submission.files || [];
         const output = submission.stdout || submission.execution_output || submission.grade_comments || submission.compilation_output || '';
         const fileList = files.length ? files.map(file => file.filename).join(', ') : '';
+        const code = submission.source_code || '';
         return `
             <div class="ag-code-block">
                 <div class="ag-code-block-header">
@@ -2252,7 +2327,9 @@ define(['core/ajax'], function(Ajax) {
                         ${fileList ? `<span class="ag-chip ag-chip--file" title="${escapeAttr(fileList)}">${escapeHtml(fileList)}</span>` : '<span class="ag-chip ag-chip--muted">Sin archivos</span>'}
                     </div>
                 </div>
-                <pre>${escapeHtml(submission.source_code || 'No se encontraron archivos de código para esta entrega.')}</pre>
+                ${code
+                    ? `<pre class="ag-code-block-pre"><code class="ag-code-lines">${renderCodeLines(code)}</code></pre>`
+                    : '<pre class="ag-code-block-pre ag-code-block-pre--empty">No se encontraron archivos de código para esta entrega.</pre>'}
                 ${output ? `
                     <details class="ag-code-output">
                         <summary>Salida de ejecución</summary>
@@ -2262,6 +2339,15 @@ define(['core/ajax'], function(Ajax) {
             </div>
         `;
     };
+
+    // Divide el código en líneas envueltas para numerarlas con contadores CSS. El número
+    // se pinta con ::before, así que no es seleccionable ni se copia junto con el código.
+    const renderCodeLines = code => String(code)
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map(line => `<span class="ag-code-line">${escapeHtml(line)}</span>`)
+        .join('');
 
     const findCriterion = criterionId => state.rubricCriteria.find(item => String(item.id) === String(criterionId));
 

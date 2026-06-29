@@ -53,7 +53,7 @@
                 <tbody>
                     {{#criteria}}
                     <tr>
-                        <td class="aig-criterion-name">{{name}}</td>
+                        <td class="aig-criterion-name">{{name}}{{#teacherAdjusted}} <span class="aig-adjusted-badge">{{#str}}criterion:adjusted, local_ai_grading{{/str}}</span>{{/teacherAdjusted}}</td>
                         <td>{{#hasLevel}}{{levelName}}{{/hasLevel}}{{^hasLevel}}<span class="aig-muted">&mdash;</span>{{/hasLevel}}</td>
                         <td class="aig-col-score">
                             <span class="aig-score-pill {{colorClass}}">{{#score}}{{score}}{{/score}}{{^score}}&mdash;{{/score}} / {{max}}</span>

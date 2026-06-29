@@ -660,17 +660,55 @@
 }
 
 .ag-code-block pre {
-    max-height: 260px;
+    max-height: min(560px, 62vh);
     margin: 0;
-    padding: 14px 16px;
+    padding: 12px 0;
     overflow: auto;
     color: #f3f4f6;
     background: #111827;
     border-radius: 8px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: 13.5px;
+    line-height: 1.6;
     white-space: pre;
+    tab-size: 4;
+    -moz-tab-size: 4;
+}
+
+/* Mensaje cuando no hay código (sin numeración). */
+.ag-code-block pre.ag-code-block-pre--empty {
+    padding: 14px 16px;
+    color: #9ca3af;
+    font-style: italic;
+    white-space: pre-wrap;
+}
+
+/* Numeración de líneas con contadores CSS: el número se pinta en ::before, así que NO se
+   selecciona ni se copia junto con el código del estudiante. */
+.ag-code-lines {
+    display: inline-block;
+    min-width: 100%;
+    counter-reset: ag-code-line;
+}
+
+.ag-code-line {
+    display: block;
+    counter-increment: ag-code-line;
+    padding-right: 16px;
+    white-space: pre;
+}
+
+.ag-code-line::before {
+    content: counter(ag-code-line);
+    display: inline-block;
+    width: 3ch;
+    margin-right: 14px;
+    padding-right: 10px;
+    border-right: 1px solid #1f2937;
+    color: #6b7280;
+    text-align: right;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .ag-code-output {
@@ -1482,6 +1520,16 @@
     background: var(--ag-green-50);
 }
 
+/* Botón "Evaluar con IA" por fila: acento azul para que el robot se lea como la acción IA. */
+.ag-row-actions .ag-icon-btn--ai {
+    color: #2563eb;
+}
+
+.ag-icon-btn--ai:hover:not([disabled]) {
+    color: #1d4ed8;
+    background: var(--ag-blue-50);
+}
+
 .ag-svg {
     width: 16px;
     height: 16px;
@@ -1953,6 +2001,83 @@
 /* ====================================================================== */
 .ag-result-drawer--wide {
     width: min(1180px, 100vw);
+}
+
+/* Disclosure de la descripción del ejercicio VPL: botón claro que despliega el texto.
+   Se usa en la tarjeta de contexto de resultados (--inline) y en el modal a lo ancho
+   (--wide), para saber qué se está calificando sin llenar la pantalla. */
+.ag-description-toggle {
+    background: var(--ag-blue-50);
+    border: 1px solid var(--ag-blue-200);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.ag-description-toggle--inline {
+    margin: 6px 0 0;
+}
+
+.ag-description-toggle--wide {
+    margin: 0 0 14px;
+}
+
+.ag-description-toggle > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 13px;
+    color: #1e3a8a;
+    font-weight: 600;
+    font-size: 13px;
+    list-style: none;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.ag-description-toggle > summary:hover {
+    background: #dbeafe;
+}
+
+.ag-description-toggle > summary::-webkit-details-marker {
+    display: none;
+}
+
+/* Doble clase: gana a `.ag-results-activity span { display: block }` cuando el
+   disclosure vive dentro de la tarjeta de actividad de la vista de resultados. */
+.ag-description-toggle .ag-description-toggle-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ag-description-toggle .ag-description-toggle-title .ag-svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Chevron que rota al abrir: señala claramente que el botón es desplegable. */
+.ag-description-toggle .ag-description-toggle-chevron {
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid #3b82f6;
+    border-bottom: 2px solid #3b82f6;
+    transform: rotate(45deg);
+    transition: transform 0.2s ease;
+}
+
+.ag-description-toggle[open] .ag-description-toggle-chevron {
+    transform: rotate(225deg);
+}
+
+.ag-description-toggle-body {
+    max-height: 240px;
+    padding: 0 13px 12px;
+    overflow: auto;
+    color: #1f2937;
+    font-size: 13px;
+    line-height: 1.55;
+    white-space: pre-line;
 }
 
 /* Diagrama de fases en forma de flechas encadenadas (proceso por fases). */
